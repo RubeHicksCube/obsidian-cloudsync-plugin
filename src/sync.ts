@@ -1,0 +1,346 @@
+import { Notice, TFile, normalizePath } from "obsidian";
+import type CloudSyncPlugin from "./main";
+import type { FileManifestEntry, SyncInstruction } from "./api";
+import { sha256Hex } from "./crypto";
+
+/**
+ * The sync engine handles the full sync lifecycle:
+ * 1. Build a manifest of all local vault files (path, SHA-256 hash, size, modified_at)
+ * 2. POST the manifest to /api/sync/delta to get instructions
+ * 3. Execute each instruction (upload, download, conflict handling)
+ * 4. POST /api/sync/complete to record the sync cursor
+ *
+ * Hashes are always computed on PLAINTEXT content so the server can
+ * compare them across devices (encryption happens after hashing for uploads,
+ * decryption happens before anything for downloads).
+ */
+export class SyncEngine {
+  private plugin: CloudSyncPlugin;
+  private syncing = false;
+
+  constructor(plugin: CloudSyncPlugin) {
+    this.plugin = plugin;
+  }
+
+  get isSyncing(): boolean {
+    return this.syncing;
+  }
+
+  /**
+   * Run a full sync cycle.
+   */
+  async sync(): Promise<void> {
+    if (this.syncing) {
+      new Notice("CloudSync: Sync already in progress");
+      return;
+    }
+
+    if (!this.plugin.api.isLoggedIn()) {
+      new Notice("CloudSync: Not logged in. Please log in first.");
+      return;
+    }
+
+    this.syncing = true;
+    this.plugin.statusBar.setState("syncing", "Building manifest...");
+
+    try {
+      // 1. Build local file manifest
+      const manifest = await this.buildManifest();
+      this.plugin.statusBar.setState(
+        "syncing",
+        `Checking ${manifest.length} files...`
+      );
+
+      // 2. Get delta instructions from server
+      const delta = await this.plugin.api.delta(manifest);
+
+      if (delta.instructions.length === 0) {
+        // Everything is in sync
+        await this.plugin.api.complete();
+        this.plugin.settings.lastSyncTime = Date.now();
+        await this.plugin.saveSettings();
+        this.plugin.statusBar.setState("idle");
+        return;
+      }
+
+      // 3. Process instructions
+      let uploaded = 0;
+      let downloaded = 0;
+      let conflicts = 0;
+      let errors = 0;
+
+      for (const instruction of delta.instructions) {
+        try {
+          switch (instruction.action) {
+            case "upload":
+              this.plugin.statusBar.setState(
+                "syncing",
+                `Uploading: ${instruction.path}`
+              );
+              await this.handleUpload(instruction);
+              uploaded++;
+              break;
+
+            case "download":
+              this.plugin.statusBar.setState(
+                "syncing",
+                `Downloading: ${instruction.path}`
+              );
+              await this.handleDownload(instruction);
+              downloaded++;
+              break;
+
+            case "conflict":
+              this.plugin.statusBar.setState(
+                "syncing",
+                `Resolving conflict: ${instruction.path}`
+              );
+              await this.handleConflict(instruction);
+              conflicts++;
+              break;
+
+            case "delete":
+              this.plugin.statusBar.setState(
+                "syncing",
+                `Deleting: ${instruction.path}`
+              );
+              await this.handleDelete(instruction);
+              break;
+          }
+        } catch (e: unknown) {
+          errors++;
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`CloudSync: Error processing ${instruction.path}:`, msg);
+        }
+      }
+
+      // 4. Complete sync
+      await this.plugin.api.complete();
+      this.plugin.settings.lastSyncTime = Date.now();
+      await this.plugin.saveSettings();
+
+      // Report results
+      const parts: string[] = [];
+      if (uploaded > 0) parts.push(`${uploaded} uploaded`);
+      if (downloaded > 0) parts.push(`${downloaded} downloaded`);
+      if (conflicts > 0) parts.push(`${conflicts} conflicts`);
+      if (errors > 0) parts.push(`${errors} errors`);
+
+      const summary = parts.length > 0 ? parts.join(", ") : "no changes";
+      new Notice(`CloudSync: Sync complete (${summary})`);
+      this.plugin.statusBar.setState("idle");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("CloudSync: Sync failed:", msg);
+      new Notice(`CloudSync: Sync failed - ${msg}`);
+      this.plugin.statusBar.setState("error", `Error: ${msg}`);
+    } finally {
+      this.syncing = false;
+    }
+  }
+
+  /**
+   * Build a manifest of all files in the vault.
+   * Skips plugin config directories and hidden files.
+   */
+  private async buildManifest(): Promise<FileManifestEntry[]> {
+    const vault = this.plugin.app.vault;
+    const files = vault.getFiles();
+    const manifest: FileManifestEntry[] = [];
+
+    for (const file of files) {
+      // Skip plugin config and hidden files
+      if (this.shouldSkip(file.path)) continue;
+
+      try {
+        const content = await vault.readBinary(file);
+        const hash = await sha256Hex(content);
+
+        manifest.push({
+          path: file.path,
+          hash,
+          size: content.byteLength,
+          modified_at: Math.floor(file.stat.mtime / 1000), // Convert ms to seconds
+        });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`CloudSync: Could not read ${file.path}: ${msg}`);
+      }
+    }
+
+    return manifest;
+  }
+
+  /**
+   * Handle an upload instruction: read file, optionally encrypt, upload.
+   */
+  private async handleUpload(instruction: SyncInstruction): Promise<void> {
+    const vault = this.plugin.app.vault;
+    const file = vault.getAbstractFileByPath(instruction.path);
+
+    if (!(file instanceof TFile)) {
+      throw new Error(`File not found in vault: ${instruction.path}`);
+    }
+
+    let data = await vault.readBinary(file);
+
+    // Encrypt if passphrase is set
+    if (this.isEncryptionEnabled()) {
+      data = await this.plugin.crypto.encrypt(
+        data,
+        this.plugin.settings.encryptionPassphrase,
+        this.plugin.settings.encryptionSalt
+      );
+    }
+
+    await this.plugin.api.upload(instruction.path, data);
+  }
+
+  /**
+   * Handle a download instruction: download, optionally decrypt, write file.
+   */
+  private async handleDownload(instruction: SyncInstruction): Promise<void> {
+    if (!instruction.file_id) {
+      throw new Error(`No file_id for download: ${instruction.path}`);
+    }
+
+    let data = await this.plugin.api.download(instruction.file_id);
+
+    // Decrypt if passphrase is set
+    if (this.isEncryptionEnabled()) {
+      data = await this.plugin.crypto.decrypt(
+        data,
+        this.plugin.settings.encryptionPassphrase,
+        this.plugin.settings.encryptionSalt
+      );
+    }
+
+    const vault = this.plugin.app.vault;
+    const normalizedPath = normalizePath(instruction.path);
+
+    // Ensure parent directories exist
+    await this.ensureDirectory(normalizedPath);
+
+    const existing = vault.getAbstractFileByPath(normalizedPath);
+    if (existing instanceof TFile) {
+      await vault.modifyBinary(existing, data);
+    } else {
+      await vault.createBinary(normalizedPath, data);
+    }
+  }
+
+  /**
+   * Handle a conflict: download the server version with a .conflict suffix,
+   * then upload the local version so both copies are preserved.
+   */
+  private async handleConflict(instruction: SyncInstruction): Promise<void> {
+    // First, if there is a server version, download it with a conflict suffix
+    if (instruction.file_id) {
+      let serverData = await this.plugin.api.download(instruction.file_id);
+
+      if (this.isEncryptionEnabled()) {
+        serverData = await this.plugin.crypto.decrypt(
+          serverData,
+          this.plugin.settings.encryptionPassphrase,
+          this.plugin.settings.encryptionSalt
+        );
+      }
+
+      const conflictPath = this.makeConflictPath(instruction.path);
+      await this.ensureDirectory(conflictPath);
+
+      const vault = this.plugin.app.vault;
+      const existing = vault.getAbstractFileByPath(conflictPath);
+      if (existing instanceof TFile) {
+        await vault.modifyBinary(existing, serverData);
+      } else {
+        await vault.createBinary(conflictPath, serverData);
+      }
+
+      new Notice(
+        `CloudSync: Conflict on "${instruction.path}" - server version saved as "${conflictPath}"`
+      );
+    }
+
+    // Then upload the local version to the server so it becomes the current version
+    const vault = this.plugin.app.vault;
+    const localFile = vault.getAbstractFileByPath(instruction.path);
+    if (localFile instanceof TFile) {
+      let data = await vault.readBinary(localFile);
+      if (this.isEncryptionEnabled()) {
+        data = await this.plugin.crypto.encrypt(
+          data,
+          this.plugin.settings.encryptionPassphrase,
+          this.plugin.settings.encryptionSalt
+        );
+      }
+      await this.plugin.api.upload(instruction.path, data);
+    }
+  }
+
+  /**
+   * Handle a delete instruction: remove the local file.
+   */
+  private async handleDelete(instruction: SyncInstruction): Promise<void> {
+    const vault = this.plugin.app.vault;
+    const file = vault.getAbstractFileByPath(instruction.path);
+    if (file instanceof TFile) {
+      await vault.delete(file);
+    }
+  }
+
+  /**
+   * Create a conflict path by adding .conflict-{timestamp} before the extension.
+   */
+  private makeConflictPath(originalPath: string): string {
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")
+      .slice(0, 19);
+    const lastDot = originalPath.lastIndexOf(".");
+    if (lastDot === -1) {
+      return `${originalPath}.conflict-${timestamp}`;
+    }
+    const base = originalPath.substring(0, lastDot);
+    const ext = originalPath.substring(lastDot);
+    return `${base}.conflict-${timestamp}${ext}`;
+  }
+
+  /**
+   * Ensure all parent directories for a given file path exist.
+   */
+  private async ensureDirectory(filePath: string): Promise<void> {
+    const parts = filePath.split("/");
+    if (parts.length <= 1) return;
+
+    const dirPath = parts.slice(0, -1).join("/");
+    const vault = this.plugin.app.vault;
+
+    if (!vault.getAbstractFileByPath(dirPath)) {
+      await vault.createFolder(dirPath);
+    }
+  }
+
+  /**
+   * Check if a file should be skipped during sync.
+   */
+  private shouldSkip(path: string): boolean {
+    // Skip Obsidian config
+    if (path.startsWith(".obsidian/")) return true;
+    // Skip hidden files (Unix-style)
+    if (path.startsWith(".")) return true;
+    // Skip plugin's own data
+    if (path === "data.json") return true;
+    return false;
+  }
+
+  /**
+   * Check if encryption is enabled.
+   */
+  private isEncryptionEnabled(): boolean {
+    return (
+      !!this.plugin.settings.encryptionPassphrase &&
+      !!this.plugin.settings.encryptionSalt
+    );
+  }
+}

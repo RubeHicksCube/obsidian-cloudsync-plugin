@@ -1,0 +1,56 @@
+/* CloudSync Plugin Styles */
+
+.cloudsync-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cloudsync-status-bar .sync-icon {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+
+.cloudsync-status-bar .sync-icon.idle {
+  background-color: var(--text-success);
+}
+
+.cloudsync-status-bar .sync-icon.syncing {
+  background-color: var(--text-accent);
+  animation: cloudsync-pulse 1s ease-in-out infinite;
+}
+
+.cloudsync-status-bar .sync-icon.error {
+  background-color: var(--text-error);
+}
+
+@keyframes cloudsync-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.cloudsync-settings .setting-item-description {
+  white-space: pre-wrap;
+}
+
+.cloudsync-settings .connection-status {
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 0.9em;
+}
+
+.cloudsync-settings .connection-status.connected {
+  background-color: rgba(var(--success-rgb), 0.1);
+  border: 1px solid var(--text-success);
+  color: var(--text-success);
+}
+
+.cloudsync-settings .connection-status.disconnected {
+  background-color: rgba(var(--error-rgb), 0.1);
+  border: 1px solid var(--text-error);
+  color: var(--text-error);
+}
