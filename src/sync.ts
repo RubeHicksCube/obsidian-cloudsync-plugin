@@ -14,9 +14,17 @@ import { sha256Hex } from "./crypto";
  * compare them across devices (encryption happens after hashing for uploads,
  * decryption happens before anything for downloads).
  */
+interface CachedFileInfo {
+  hash: string;
+  mtime: number;
+  size: number;
+}
+
 export class SyncEngine {
   private plugin: CloudSyncPlugin;
   private syncing = false;
+  /** Cache of file hashes keyed by path. Only recompute when mtime/size changes. */
+  private hashCache: Map<string, CachedFileInfo> = new Map();
 
   constructor(plugin: CloudSyncPlugin) {
     this.plugin = plugin;
@@ -150,32 +158,66 @@ export class SyncEngine {
 
   /**
    * Build a manifest of all files in the vault.
-   * Skips plugin config directories and hidden files.
+   * Uses a hash cache to avoid re-reading files that haven't changed
+   * (same mtime and size). Only files with a new mtime or size are
+   * read and hashed — unchanged files reuse their cached hash.
    */
   private async buildManifest(): Promise<FileManifestEntry[]> {
     const vault = this.plugin.app.vault;
     const files = vault.getFiles();
     const manifest: FileManifestEntry[] = [];
+    const seenPaths = new Set<string>();
+    let cacheHits = 0;
 
     for (const file of files) {
-      // Skip plugin config and hidden files
       if (this.shouldSkip(file.path)) continue;
+      seenPaths.add(file.path);
 
+      const mtime = Math.floor(file.stat.mtime / 1000);
+      const size = file.stat.size;
+
+      // Check cache: if mtime and size are unchanged, reuse the cached hash
+      const cached = this.hashCache.get(file.path);
+      if (cached && cached.mtime === mtime && cached.size === size) {
+        manifest.push({
+          path: file.path,
+          hash: cached.hash,
+          size: cached.size,
+          modified_at: mtime,
+        });
+        cacheHits++;
+        continue;
+      }
+
+      // File is new or changed — read and hash it
       try {
         const content = await vault.readBinary(file);
         const hash = await sha256Hex(content);
+
+        this.hashCache.set(file.path, { hash, mtime, size: content.byteLength });
 
         manifest.push({
           path: file.path,
           hash,
           size: content.byteLength,
-          modified_at: Math.floor(file.stat.mtime / 1000), // Convert ms to seconds
+          modified_at: mtime,
         });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn(`CloudSync: Could not read ${file.path}: ${msg}`);
       }
     }
+
+    // Clean up cache entries for files that no longer exist
+    for (const path of this.hashCache.keys()) {
+      if (!seenPaths.has(path)) {
+        this.hashCache.delete(path);
+      }
+    }
+
+    console.log(
+      `CloudSync: Manifest built — ${manifest.length} files, ${cacheHits} cached, ${manifest.length - cacheHits} hashed`
+    );
 
     return manifest;
   }
