@@ -112,8 +112,9 @@ export class SyncEngine {
                 total,
                 `Downloading: ${instruction.path}`
               );
-              await this.handleDownload(instruction);
-              downloaded++;
+              if (await this.handleDownload(instruction)) {
+                downloaded++;
+              }
               break;
 
             case "conflict":
@@ -268,7 +269,7 @@ export class SyncEngine {
   /**
    * Handle a download instruction: download, optionally decrypt, write file.
    */
-  private async handleDownload(instruction: SyncInstruction): Promise<void> {
+  private async handleDownload(instruction: SyncInstruction): Promise<boolean> {
     if (!instruction.file_id) {
       throw new Error(`No file_id for download: ${instruction.path}`);
     }
@@ -286,16 +287,30 @@ export class SyncEngine {
 
     const vault = this.plugin.app.vault;
     const normalizedPath = normalizePath(instruction.path);
-
-    // Ensure parent directories exist
-    await this.ensureDirectory(normalizedPath);
-
     const existing = vault.getAbstractFileByPath(normalizedPath);
+
+    // If we already have this file, check whether the content actually differs.
+    // The server may have a stale hash (e.g. encrypted blob hash) that doesn't
+    // match our plaintext hash, causing a false "download" instruction.
     if (existing instanceof TFile) {
+      const localData = await vault.readBinary(existing);
+      const localHash = await sha256Hex(localData);
+      const downloadedHash = await sha256Hex(data);
+
+      if (localHash === downloadedHash) {
+        // Content is identical — fix the server's hash, skip the write
+        await this.plugin.api.fixHash(instruction.file_id, localHash);
+        return false; // nothing was written
+      }
+
       await vault.modifyBinary(existing, data);
-    } else {
-      await vault.createBinary(normalizedPath, data);
+      return true;
     }
+
+    // New file — write it
+    await this.ensureDirectory(normalizedPath);
+    await vault.createBinary(normalizedPath, data);
+    return true;
   }
 
   /**

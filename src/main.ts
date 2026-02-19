@@ -82,11 +82,13 @@ export default class CloudSyncPlugin extends Plugin {
       },
     });
 
-    // Watch for file changes — mark sync engine dirty and trigger debounced sync
+    // Watch for file changes — mark sync engine dirty and trigger debounced sync.
+    // Ignore events while syncing so downloads don't trigger another sync cycle.
     const onVaultChange = (file: import("obsidian").TAbstractFile) => {
       if (
         file instanceof TFile &&
-        !file.path.startsWith(".obsidian/")
+        !file.path.startsWith(".obsidian/") &&
+        !this.syncEngine.isSyncing
       ) {
         this.syncEngine.markDirty();
         if (this.settings.autoSyncInterval > 0) {

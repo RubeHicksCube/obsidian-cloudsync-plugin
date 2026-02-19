@@ -174,6 +174,10 @@ export class CloudSyncAPI {
     await this.authRequest("DELETE", `/api/sync/delete/${fileId}`);
   }
 
+  async fixHash(fileId: string, hash: string): Promise<void> {
+    await this.authRequest("POST", `/api/sync/fix-hash`, { file_id: fileId, hash });
+  }
+
   async complete(): Promise<CompleteResponse> {
     return (await this.authRequest("POST", "/api/sync/complete", {
       device_id: this.plugin.settings.deviceId,
