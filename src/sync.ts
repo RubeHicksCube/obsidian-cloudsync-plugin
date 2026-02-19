@@ -25,6 +25,8 @@ export class SyncEngine {
   private syncing = false;
   /** Cache of file hashes keyed by path. Only recompute when mtime/size changes. */
   private hashCache: Map<string, CachedFileInfo> = new Map();
+  /** True when local vault changes have been detected since last sync. */
+  private dirty = false;
 
   constructor(plugin: CloudSyncPlugin) {
     this.plugin = plugin;
@@ -34,17 +36,27 @@ export class SyncEngine {
     return this.syncing;
   }
 
+  get isDirty(): boolean {
+    return this.dirty;
+  }
+
+  /** Mark the engine as having pending local changes. */
+  markDirty(): void {
+    this.dirty = true;
+  }
+
   /**
    * Run a full sync cycle.
+   * @param silent If true, suppress notifications when there are no changes.
    */
-  async sync(): Promise<void> {
+  async sync(silent = false): Promise<void> {
     if (this.syncing) {
-      new Notice("CloudSync: Sync already in progress");
+      if (!silent) new Notice("CloudSync: Sync already in progress");
       return;
     }
 
     if (!this.plugin.api.isLoggedIn()) {
-      new Notice("CloudSync: Not logged in. Please log in first.");
+      if (!silent) new Notice("CloudSync: Not logged in. Please log in first.");
       return;
     }
 
@@ -67,6 +79,7 @@ export class SyncEngine {
         await this.plugin.api.complete();
         this.plugin.settings.lastSyncTime = Date.now();
         await this.plugin.saveSettings();
+        this.dirty = false;
         this.plugin.statusBar.setState("idle");
         return;
       }
@@ -134,8 +147,9 @@ export class SyncEngine {
       await this.plugin.api.complete();
       this.plugin.settings.lastSyncTime = Date.now();
       await this.plugin.saveSettings();
+      this.dirty = false;
 
-      // Report results
+      // Report results (skip notification in silent mode when nothing happened)
       const parts: string[] = [];
       if (uploaded > 0) parts.push(`${uploaded} uploaded`);
       if (downloaded > 0) parts.push(`${downloaded} downloaded`);
@@ -143,8 +157,10 @@ export class SyncEngine {
       if (conflicts > 0) parts.push(`${conflicts} conflicts`);
       if (errors > 0) parts.push(`${errors} errors`);
 
-      const summary = parts.length > 0 ? parts.join(", ") : "no changes";
-      new Notice(`CloudSync: Sync complete (${summary})`);
+      if (!silent || parts.length > 0) {
+        const summary = parts.length > 0 ? parts.join(", ") : "no changes";
+        new Notice(`CloudSync: Sync complete (${summary})`);
+      }
       this.plugin.statusBar.setState("idle");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

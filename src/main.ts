@@ -20,7 +20,6 @@ export default class CloudSyncPlugin extends Plugin {
 
   private autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   private debouncedSync: ReturnType<typeof debounce>;
-  private fileChangeRef: ReturnType<typeof this.app.vault.on> | null = null;
 
   constructor(app: import("obsidian").App, manifest: import("obsidian").PluginManifest) {
     super(app, manifest);
@@ -28,7 +27,7 @@ export default class CloudSyncPlugin extends Plugin {
     this.debouncedSync = debounce(
       () => {
         if (this.api.isLoggedIn() && !this.syncEngine.isSyncing) {
-          this.syncNow();
+          this.syncEngine.sync(true);
         }
       },
       30_000,
@@ -83,17 +82,22 @@ export default class CloudSyncPlugin extends Plugin {
       },
     });
 
-    // Watch for file changes (debounced auto-sync trigger)
-    this.fileChangeRef = this.app.vault.on("modify", (file) => {
+    // Watch for file changes — mark sync engine dirty and trigger debounced sync
+    const onVaultChange = (file: import("obsidian").TAbstractFile) => {
       if (
         file instanceof TFile &&
-        !file.path.startsWith(".obsidian/") &&
-        this.settings.autoSyncInterval > 0
+        !file.path.startsWith(".obsidian/")
       ) {
-        this.debouncedSync();
+        this.syncEngine.markDirty();
+        if (this.settings.autoSyncInterval > 0) {
+          this.debouncedSync();
+        }
       }
-    });
-    this.registerEvent(this.fileChangeRef);
+    };
+    this.registerEvent(this.app.vault.on("modify", onVaultChange));
+    this.registerEvent(this.app.vault.on("create", onVaultChange));
+    this.registerEvent(this.app.vault.on("delete", onVaultChange));
+    this.registerEvent(this.app.vault.on("rename", onVaultChange));
 
     // Start auto-sync timer
     this.restartAutoSync();
@@ -181,8 +185,12 @@ export default class CloudSyncPlugin extends Plugin {
     if (this.settings.autoSyncInterval > 0) {
       const intervalMs = this.settings.autoSyncInterval * 60 * 1000;
       this.autoSyncTimer = setInterval(async () => {
-        if (this.api.isLoggedIn() && !this.syncEngine.isSyncing) {
-          await this.syncNow();
+        if (
+          this.api.isLoggedIn() &&
+          !this.syncEngine.isSyncing &&
+          this.syncEngine.isDirty
+        ) {
+          await this.syncEngine.sync(true);
         }
       }, intervalMs);
     }
