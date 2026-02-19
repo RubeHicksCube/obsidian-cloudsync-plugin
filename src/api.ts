@@ -162,8 +162,8 @@ export class CloudSyncAPI {
     })) as DeltaResponse;
   }
 
-  async upload(path: string, data: ArrayBuffer): Promise<UploadResponse> {
-    return (await this.authUpload("/api/sync/upload", path, data)) as UploadResponse;
+  async upload(path: string, data: ArrayBuffer, plaintextHash?: string): Promise<UploadResponse> {
+    return (await this.authUpload("/api/sync/upload", path, data, plaintextHash)) as UploadResponse;
   }
 
   async download(fileId: string): Promise<ArrayBuffer> {
@@ -239,14 +239,15 @@ export class CloudSyncAPI {
   private async authUpload(
     path: string,
     filePath: string,
-    fileData: ArrayBuffer
+    fileData: ArrayBuffer,
+    plaintextHash?: string
   ): Promise<unknown> {
     try {
-      return await this.uploadRequest(path, filePath, fileData);
+      return await this.uploadRequest(path, filePath, fileData, plaintextHash);
     } catch (e: unknown) {
       if (e instanceof ApiError && e.status === 401) {
         await this.handleTokenRefresh();
-        return await this.uploadRequest(path, filePath, fileData);
+        return await this.uploadRequest(path, filePath, fileData, plaintextHash);
       }
       throw e;
     }
@@ -339,7 +340,8 @@ export class CloudSyncAPI {
   private async uploadRequest(
     path: string,
     filePath: string,
-    fileData: ArrayBuffer
+    fileData: ArrayBuffer,
+    plaintextHash?: string
   ): Promise<unknown> {
     const boundary = "----CloudSync" + Date.now().toString(36) + Math.random().toString(36);
 
@@ -351,6 +353,12 @@ export class CloudSyncAPI {
       `Content-Disposition: form-data; name="path"\r\n\r\n` +
       `${filePath}\r\n`;
 
+    const hashPart = plaintextHash
+      ? `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="hash"\r\n\r\n` +
+        `${plaintextHash}\r\n`
+      : "";
+
     const filePart =
       `--${boundary}\r\n` +
       `Content-Disposition: form-data; name="file"; filename="${filePath.split("/").pop()}"\r\n` +
@@ -359,6 +367,7 @@ export class CloudSyncAPI {
     const ending = `\r\n--${boundary}--\r\n`;
 
     const pathBytes = encoder.encode(pathPart);
+    const hashBytes = encoder.encode(hashPart);
     const filePartBytes = encoder.encode(filePart);
     const endingBytes = encoder.encode(ending);
     const fileBytes = new Uint8Array(fileData);
@@ -366,6 +375,7 @@ export class CloudSyncAPI {
     // Combine all parts
     const totalLength =
       pathBytes.byteLength +
+      hashBytes.byteLength +
       filePartBytes.byteLength +
       fileBytes.byteLength +
       endingBytes.byteLength;
@@ -374,6 +384,8 @@ export class CloudSyncAPI {
     let offset = 0;
     combined.set(pathBytes, offset);
     offset += pathBytes.byteLength;
+    combined.set(hashBytes, offset);
+    offset += hashBytes.byteLength;
     combined.set(filePartBytes, offset);
     offset += filePartBytes.byteLength;
     combined.set(fileBytes, offset);

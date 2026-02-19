@@ -249,18 +249,20 @@ export class SyncEngine {
       throw new Error(`File not found in vault: ${instruction.path}`);
     }
 
-    let data = await vault.readBinary(file);
+    const plaintext = await vault.readBinary(file);
+    const plaintextHash = await sha256Hex(plaintext);
+    let data: ArrayBuffer = plaintext;
 
     // Encrypt if passphrase is set
     if (this.isEncryptionEnabled()) {
       data = await this.plugin.crypto.encrypt(
-        data,
+        plaintext,
         this.plugin.settings.encryptionPassphrase,
         this.plugin.settings.encryptionSalt
       );
     }
 
-    await this.plugin.api.upload(instruction.path, data);
+    await this.plugin.api.upload(instruction.path, data, plaintextHash);
   }
 
   /**
@@ -333,15 +335,17 @@ export class SyncEngine {
     const vault = this.plugin.app.vault;
     const localFile = vault.getAbstractFileByPath(instruction.path);
     if (localFile instanceof TFile) {
-      let data = await vault.readBinary(localFile);
+      const plaintext = await vault.readBinary(localFile);
+      const plaintextHash = await sha256Hex(plaintext);
+      let data: ArrayBuffer = plaintext;
       if (this.isEncryptionEnabled()) {
         data = await this.plugin.crypto.encrypt(
-          data,
+          plaintext,
           this.plugin.settings.encryptionPassphrase,
           this.plugin.settings.encryptionSalt
         );
       }
-      await this.plugin.api.upload(instruction.path, data);
+      await this.plugin.api.upload(instruction.path, data, plaintextHash);
     }
   }
 
