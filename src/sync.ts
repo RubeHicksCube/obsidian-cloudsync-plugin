@@ -68,13 +68,16 @@ export class SyncEngine {
       let downloaded = 0;
       let conflicts = 0;
       let errors = 0;
+      const total = delta.instructions.length;
 
-      for (const instruction of delta.instructions) {
+      for (let i = 0; i < delta.instructions.length; i++) {
+        const instruction = delta.instructions[i];
         try {
           switch (instruction.action) {
             case "upload":
-              this.plugin.statusBar.setState(
-                "syncing",
+              this.plugin.statusBar.setProgress(
+                i + 1,
+                total,
                 `Uploading: ${instruction.path}`
               );
               await this.handleUpload(instruction);
@@ -82,8 +85,9 @@ export class SyncEngine {
               break;
 
             case "download":
-              this.plugin.statusBar.setState(
-                "syncing",
+              this.plugin.statusBar.setProgress(
+                i + 1,
+                total,
                 `Downloading: ${instruction.path}`
               );
               await this.handleDownload(instruction);
@@ -91,8 +95,9 @@ export class SyncEngine {
               break;
 
             case "conflict":
-              this.plugin.statusBar.setState(
-                "syncing",
+              this.plugin.statusBar.setProgress(
+                i + 1,
+                total,
                 `Resolving conflict: ${instruction.path}`
               );
               await this.handleConflict(instruction);
@@ -100,8 +105,9 @@ export class SyncEngine {
               break;
 
             case "delete":
-              this.plugin.statusBar.setState(
-                "syncing",
+              this.plugin.statusBar.setProgress(
+                i + 1,
+                total,
                 `Deleting: ${instruction.path}`
               );
               await this.handleDelete(instruction);
@@ -323,15 +329,59 @@ export class SyncEngine {
 
   /**
    * Check if a file should be skipped during sync.
+   * Uses built-in rules plus user-configured exclude patterns.
    */
   private shouldSkip(path: string): boolean {
-    // Skip Obsidian config
-    if (path.startsWith(".obsidian/")) return true;
-    // Skip hidden files (Unix-style)
+    // Skip hidden files (Unix-style) — always
     if (path.startsWith(".")) return true;
     // Skip plugin's own data
     if (path === "data.json") return true;
+
+    // Check user-configured exclude patterns
+    for (const pattern of this.plugin.settings.excludePatterns) {
+      if (this.matchesPattern(path, pattern)) return true;
+    }
+
     return false;
+  }
+
+  /**
+   * Simple glob-style pattern matching.
+   * Supports: * (any chars except /), ** (any chars including /),
+   * trailing / (matches directory prefix).
+   */
+  private matchesPattern(path: string, pattern: string): boolean {
+    // Trailing slash matches any path starting with the pattern prefix
+    if (pattern.endsWith("/")) {
+      return path.startsWith(pattern) || path.startsWith(pattern.slice(0, -1));
+    }
+
+    // Exact match
+    if (path === pattern) return true;
+
+    // Convert glob to regex
+    let regex = "^";
+    for (let i = 0; i < pattern.length; i++) {
+      const ch = pattern[i];
+      if (ch === "*" && pattern[i + 1] === "*") {
+        regex += ".*";
+        i++; // Skip second *
+        if (pattern[i + 1] === "/") i++; // Skip trailing / after **
+      } else if (ch === "*") {
+        regex += "[^/]*";
+      } else if (ch === "?" || ch === "." || ch === "(" || ch === ")" || ch === "[" || ch === "]" || ch === "{" || ch === "}" || ch === "+" || ch === "^" || ch === "$" || ch === "|" || ch === "\\") {
+        regex += "\\" + ch;
+      } else {
+        regex += ch;
+      }
+    }
+    regex += "$";
+
+    try {
+      return new RegExp(regex).test(path);
+    } catch {
+      return false;
+    }
   }
 
   /**

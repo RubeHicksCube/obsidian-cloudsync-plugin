@@ -16,6 +16,8 @@ export interface CloudSyncSettings {
   encryptionSalt: string;
   // Last sync timestamp
   lastSyncTime: number;
+  // Selective sync: glob patterns to exclude
+  excludePatterns: string[];
 }
 
 export const DEFAULT_SETTINGS: CloudSyncSettings = {
@@ -30,6 +32,11 @@ export const DEFAULT_SETTINGS: CloudSyncSettings = {
   deviceId: "",
   encryptionSalt: "",
   lastSyncTime: 0,
+  excludePatterns: [
+    ".obsidian/workspace.json",
+    ".obsidian/workspace-mobile.json",
+    ".trash/",
+  ],
 };
 
 export class CloudSyncSettingTab extends PluginSettingTab {
@@ -151,6 +158,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
               this.plugin.settings.userId = "";
               this.plugin.settings.deviceId = "";
               await this.plugin.saveSettings();
+              this.plugin.wsClient?.disconnect();
               new Notice("CloudSync: Logged out");
               this.display();
             })
@@ -178,6 +186,43 @@ export class CloudSyncSettingTab extends PluginSettingTab {
           });
       });
 
+    if (this.plugin.settings.encryptionPassphrase && isLoggedIn) {
+      new Setting(containerEl)
+        .setName("Change passphrase")
+        .setDesc(
+          "Re-encrypts all vault files with a new passphrase, then triggers a full re-upload. " +
+            "This will take time proportional to your vault size."
+        )
+        .addButton((btn) =>
+          btn
+            .setButtonText("Change Passphrase")
+            .setWarning()
+            .onClick(async () => {
+              const newPassphrase = prompt(
+                "Enter new encryption passphrase:"
+              );
+              if (!newPassphrase) return;
+              const confirm = prompt(
+                "Confirm new passphrase (type it again):"
+              );
+              if (newPassphrase !== confirm) {
+                new Notice("CloudSync: Passphrases do not match");
+                return;
+              }
+              try {
+                await this.plugin.changePassphrase(newPassphrase);
+                new Notice(
+                  "CloudSync: Passphrase changed. Full re-upload will begin."
+                );
+                this.display();
+              } catch (e: unknown) {
+                const msg = e instanceof Error ? e.message : String(e);
+                new Notice(`CloudSync: Passphrase change failed - ${msg}`);
+              }
+            })
+        );
+    }
+
     // Sync options
     containerEl.createEl("h3", { text: "Sync" });
 
@@ -199,6 +244,30 @@ export class CloudSyncSettingTab extends PluginSettingTab {
             }
           })
       );
+
+    // Selective sync
+    new Setting(containerEl)
+      .setName("Exclude patterns")
+      .setDesc(
+        "File paths to exclude from sync (one per line). Supports simple glob patterns: " +
+          "use * for wildcard, end with / to match folders."
+      )
+      .addTextArea((text) => {
+        text.inputEl.rows = 5;
+        text.inputEl.cols = 40;
+        text
+          .setPlaceholder(
+            ".obsidian/workspace.json\n.obsidian/workspace-mobile.json\n.trash/"
+          )
+          .setValue(this.plugin.settings.excludePatterns.join("\n"))
+          .onChange(async (value) => {
+            this.plugin.settings.excludePatterns = value
+              .split("\n")
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0);
+            await this.plugin.saveSettings();
+          });
+      });
 
     // Last sync info
     if (this.plugin.settings.lastSyncTime > 0) {

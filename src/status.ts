@@ -7,6 +7,7 @@ export class StatusBar {
   private statusBarEl: HTMLElement;
   private state: SyncState = "idle";
   private message: string = "";
+  private progress: string = "";
 
   constructor(plugin: CloudSyncPlugin, statusBarEl: HTMLElement) {
     this.plugin = plugin;
@@ -16,6 +17,17 @@ export class StatusBar {
 
   setState(state: SyncState, message?: string): void {
     this.state = state;
+    this.message = message || "";
+    this.progress = "";
+    this.render();
+  }
+
+  /**
+   * Set sync progress with file count.
+   */
+  setProgress(current: number, total: number, message?: string): void {
+    this.state = "syncing";
+    this.progress = `${current}/${total}`;
     this.message = message || "";
     this.render();
   }
@@ -39,7 +51,11 @@ export class StatusBar {
         }
         break;
       case "syncing":
-        text = this.message || "Syncing...";
+        if (this.progress) {
+          text = `Syncing ${this.progress} files...`;
+        } else {
+          text = this.message || "Syncing...";
+        }
         break;
       case "error":
         text = this.message || "Sync error";

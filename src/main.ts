@@ -8,6 +8,7 @@ import {
 } from "./settings";
 import { StatusBar } from "./status";
 import { SyncEngine } from "./sync";
+import { WebSocketClient } from "./ws";
 
 export default class CloudSyncPlugin extends Plugin {
   settings!: CloudSyncSettings;
@@ -15,6 +16,7 @@ export default class CloudSyncPlugin extends Plugin {
   crypto!: CryptoEngine;
   syncEngine!: SyncEngine;
   statusBar!: StatusBar;
+  wsClient!: WebSocketClient;
 
   private autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   private debouncedSync: ReturnType<typeof debounce>;
@@ -44,6 +46,7 @@ export default class CloudSyncPlugin extends Plugin {
     this.api = new CloudSyncAPI(this);
     this.crypto = new CryptoEngine();
     this.syncEngine = new SyncEngine(this);
+    this.wsClient = new WebSocketClient(this);
 
     // Initialize encryption salt if passphrase is set but no salt exists
     if (this.settings.encryptionPassphrase && !this.settings.encryptionSalt) {
@@ -100,12 +103,16 @@ export default class CloudSyncPlugin extends Plugin {
       setTimeout(() => {
         this.syncNow();
       }, 5_000);
+
+      // Connect WebSocket for real-time sync
+      this.wsClient.connect();
     }
   }
 
   async onunload(): Promise<void> {
     console.log("CloudSync: Unloading plugin");
     this.stopAutoSync();
+    this.wsClient.disconnect();
   }
 
   async loadSettings(): Promise<void> {
@@ -189,5 +196,31 @@ export default class CloudSyncPlugin extends Plugin {
       clearInterval(this.autoSyncTimer);
       this.autoSyncTimer = null;
     }
+  }
+
+  /**
+   * Change the encryption passphrase.
+   * Generates a new salt, clears the key cache, and triggers a full re-upload
+   * so all files on the server are re-encrypted with the new key.
+   */
+  async changePassphrase(newPassphrase: string): Promise<void> {
+    // Generate a new salt for the new passphrase
+    const newSalt = this.crypto.generateSalt();
+
+    // Update settings
+    this.settings.encryptionPassphrase = newPassphrase;
+    this.settings.encryptionSalt = newSalt;
+    await this.saveSettings();
+
+    // Clear the cached key so the new passphrase/salt are used
+    this.crypto.clearCache();
+
+    // Trigger a full re-upload by resetting lastSyncTime
+    // This forces the next sync to treat all files as needing upload
+    this.settings.lastSyncTime = 0;
+    await this.saveSettings();
+
+    // Run sync immediately to re-upload everything
+    await this.syncNow();
   }
 }
