@@ -66,6 +66,7 @@ export class SyncEngine {
       // 3. Process instructions
       let uploaded = 0;
       let downloaded = 0;
+      let deleted = 0;
       let conflicts = 0;
       let errors = 0;
       const total = delta.instructions.length;
@@ -111,6 +112,7 @@ export class SyncEngine {
                 `Deleting: ${instruction.path}`
               );
               await this.handleDelete(instruction);
+              deleted++;
               break;
           }
         } catch (e: unknown) {
@@ -129,6 +131,7 @@ export class SyncEngine {
       const parts: string[] = [];
       if (uploaded > 0) parts.push(`${uploaded} uploaded`);
       if (downloaded > 0) parts.push(`${downloaded} downloaded`);
+      if (deleted > 0) parts.push(`${deleted} deleted`);
       if (conflicts > 0) parts.push(`${conflicts} conflicts`);
       if (errors > 0) parts.push(`${errors} errors`);
 
@@ -285,9 +288,15 @@ export class SyncEngine {
   }
 
   /**
-   * Handle a delete instruction: remove the local file.
+   * Handle a delete instruction: propagate local deletion to the server,
+   * or remove the local file if the server says it was deleted remotely.
    */
   private async handleDelete(instruction: SyncInstruction): Promise<void> {
+    if (instruction.file_id) {
+      // File exists on server but not locally — tell the server to delete it
+      await this.plugin.api.deleteFile(instruction.file_id);
+    }
+    // Also remove locally if it somehow still exists
     const vault = this.plugin.app.vault;
     const file = vault.getAbstractFileByPath(instruction.path);
     if (file instanceof TFile) {

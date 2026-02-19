@@ -158,6 +158,7 @@ export class CloudSyncAPI {
   async delta(files: FileManifestEntry[]): Promise<DeltaResponse> {
     return (await this.authRequest("POST", "/api/sync/delta", {
       files,
+      device_id: this.plugin.settings.deviceId,
     })) as DeltaResponse;
   }
 
@@ -167,6 +168,10 @@ export class CloudSyncAPI {
 
   async download(fileId: string): Promise<ArrayBuffer> {
     return await this.authDownload(`/api/sync/download/${fileId}`);
+  }
+
+  async deleteFile(fileId: string): Promise<void> {
+    await this.authRequest("DELETE", `/api/sync/delete/${fileId}`);
   }
 
   async complete(): Promise<CompleteResponse> {
