@@ -304,6 +304,24 @@ export class CloudSyncSettingTab extends PluginSettingTab {
         );
     }
 
+    new Setting(containerEl)
+      .setName("Directional sync")
+      .setDesc(
+        "Push: upload local files to server — local wins on conflicts, server changes are ignored. " +
+        "Pull: download server files to local — server wins on conflicts, local uploads are skipped. " +
+        "Use Push when you paste files locally that have older timestamps and don't want them overwritten."
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Push only").onClick(async () => {
+          await this.plugin.pushNow();
+        })
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Pull only").onClick(async () => {
+          await this.plugin.pullNow();
+        })
+      );
+
     // ── Exclude from sync ────────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Exclude from sync" });
 

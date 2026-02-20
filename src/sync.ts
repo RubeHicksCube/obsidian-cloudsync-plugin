@@ -14,6 +14,10 @@ import { sha256Hex } from "./crypto";
  * compare them across devices (encryption happens after hashing for uploads,
  * decryption happens before anything for downloads).
  */
+
+/** Controls which directions data flows during a sync cycle. */
+export type SyncMode = 'bidirectional' | 'push' | 'pull';
+
 interface CachedFileInfo {
   hash: string;
   mtime: number;
@@ -49,7 +53,7 @@ export class SyncEngine {
    * Run a full sync cycle.
    * @param silent If true, suppress notifications when there are no changes.
    */
-  async sync(silent = false): Promise<void> {
+  async sync(silent = false, mode: SyncMode = 'bidirectional'): Promise<void> {
     if (this.syncing) {
       if (!silent) new Notice("CloudSync: Sync already in progress");
       return;
@@ -95,15 +99,28 @@ export class SyncEngine {
         }
       }
 
-      // 3. Get delta instructions from server
-      const delta = await this.plugin.api.delta(manifest, deletedPaths);
+      // 3. Get delta instructions from server.
+      // In pull mode, don't report local deletions — we're only receiving changes.
+      const effectiveDeletedPaths = mode === 'pull' ? [] : deletedPaths;
+      const delta = await this.plugin.api.delta(manifest, effectiveDeletedPaths);
 
       // 3a. Reconcile encryption salt — must happen BEFORE any downloads so we
       // decrypt with the correct key in this same sync cycle.
       await this.reconcileEncryptionSalt(delta.encryption_salt);
 
-      if (delta.instructions.length === 0) {
-        // Everything is in sync
+      // Filter instructions based on sync mode:
+      //   push — only upload; conflicts resolve local-wins (no conflict copy created)
+      //   pull — only download/delete; conflicts resolve server-wins (no upload)
+      //   bidirectional — all instruction types (current behaviour)
+      const instructions =
+        mode === 'push'
+          ? delta.instructions.filter(i => i.action === 'upload' || i.action === 'conflict')
+          : mode === 'pull'
+          ? delta.instructions.filter(i => i.action === 'download' || i.action === 'delete' || i.action === 'conflict')
+          : delta.instructions;
+
+      if (instructions.length === 0) {
+        // Nothing to do in this mode
         await this.plugin.api.complete();
         this.plugin.settings.lastSyncTime = Date.now();
         this.plugin.settings.lastSyncedPaths = manifest.map((f) => f.path);
@@ -120,10 +137,10 @@ export class SyncEngine {
       let conflicts = 0;
       let errors = 0;
       let downloadErrors = 0; // tracked separately: download failures block cursor advance
-      const total = delta.instructions.length;
+      const total = instructions.length;
 
-      for (let i = 0; i < delta.instructions.length; i++) {
-        const instruction = delta.instructions[i];
+      for (let i = 0; i < instructions.length; i++) {
+        const instruction = instructions[i];
         try {
           switch (instruction.action) {
             case "upload":
@@ -153,8 +170,17 @@ export class SyncEngine {
                 total,
                 `Resolving conflict: ${instruction.path}`
               );
-              await this.handleConflict(instruction);
-              conflicts++;
+              if (mode === 'push') {
+                // Local wins: upload without downloading a conflict copy
+                await this.withRetry(() => this.handleUpload(instruction), instruction.path);
+                uploaded++;
+              } else if (mode === 'pull') {
+                // Server wins: overwrite local without uploading
+                if (await this.handleDownload(instruction)) downloaded++;
+              } else {
+                await this.handleConflict(instruction);
+                conflicts++;
+              }
               break;
 
             case "delete":
@@ -205,7 +231,8 @@ export class SyncEngine {
 
       if (!silent || parts.length > 0) {
         const summary = parts.length > 0 ? parts.join(", ") : "no changes";
-        new Notice(`CloudSync: Sync complete (${summary})`);
+        const opName = mode === 'push' ? 'Push' : mode === 'pull' ? 'Pull' : 'Sync';
+        new Notice(`CloudSync: ${opName} complete (${summary})`);
       }
       this.plugin.statusBar.setState("idle");
     } catch (e: unknown) {

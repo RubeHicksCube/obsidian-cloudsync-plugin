@@ -62,9 +62,25 @@ export default class CloudSyncPlugin extends Plugin {
     // Commands
     this.addCommand({
       id: "cloudsync-sync-now",
-      name: "Sync now",
+      name: "Sync now (bidirectional)",
       callback: async () => {
         await this.syncNow();
+      },
+    });
+
+    this.addCommand({
+      id: "cloudsync-push-now",
+      name: "Push now (upload local changes to server)",
+      callback: async () => {
+        await this.pushNow();
+      },
+    });
+
+    this.addCommand({
+      id: "cloudsync-pull-now",
+      name: "Pull now (download server changes to local)",
+      callback: async () => {
+        await this.pullNow();
       },
     });
 
@@ -125,10 +141,20 @@ export default class CloudSyncPlugin extends Plugin {
   }
 
   /**
-   * Trigger a sync cycle.
+   * Trigger a bidirectional sync cycle.
    */
   async syncNow(): Promise<void> {
     await this.syncEngine.sync();
+  }
+
+  /** Upload local changes to the server only. Conflicts resolve local-wins. */
+  async pushNow(): Promise<void> {
+    await this.syncEngine.sync(false, 'push');
+  }
+
+  /** Download server changes to local only. Conflicts resolve server-wins. */
+  async pullNow(): Promise<void> {
+    await this.syncEngine.sync(false, 'pull');
   }
 
   /**
