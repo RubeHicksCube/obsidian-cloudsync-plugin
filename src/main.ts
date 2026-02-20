@@ -85,7 +85,8 @@ export default class CloudSyncPlugin extends Plugin {
         !this.syncEngine.isSyncing
       ) {
         this.syncEngine.markDirty();
-        if (this.settings.autoSyncInterval > 0) {
+        // Trigger debounced sync for both interval mode (>0) and only-on-change (-1)
+        if (this.settings.autoSyncInterval !== 0) {
           this.debouncedSync();
         }
       }
@@ -150,9 +151,11 @@ export default class CloudSyncPlugin extends Plugin {
       lines.push("Never synced");
     }
 
-    lines.push(
-      `Auto-sync: ${s.autoSyncInterval > 0 ? `every ${s.autoSyncInterval} min` : "disabled"}`
-    );
+    const syncMode =
+      s.autoSyncInterval === -1 ? "only on change" :
+      s.autoSyncInterval === 0  ? "disabled" :
+      `every ${s.autoSyncInterval} min`;
+    lines.push(`Auto-sync: ${syncMode}`);
     lines.push(
       `Encryption: ${s.encryptionPassphrase ? "enabled" : "disabled"}`
     );

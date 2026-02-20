@@ -1,25 +1,67 @@
-import { App, PluginSettingTab, Setting, Notice } from "obsidian";
+import { App, PluginSettingTab, Setting, Notice, AbstractInputSuggest, TFolder } from "obsidian";
 import type CloudSyncPlugin from "./main";
+
+// ── Vault path suggest ────────────────────────────────────────────────────────
+
+class FileFolderSuggest extends AbstractInputSuggest<string> {
+  private plugin: CloudSyncPlugin;
+  private onSelect: (path: string) => void;
+
+  constructor(
+    app: App,
+    inputEl: HTMLInputElement,
+    plugin: CloudSyncPlugin,
+    onSelect: (path: string) => void
+  ) {
+    super(app, inputEl);
+    this.plugin = plugin;
+    this.onSelect = onSelect;
+  }
+
+  getSuggestions(query: string): string[] {
+    if (!query.trim()) return [];
+    const lower = query.toLowerCase();
+    const existing = new Set(this.plugin.settings.excludePatterns);
+    const results: string[] = [];
+    for (const file of this.plugin.app.vault.getAllLoadedFiles()) {
+      const path = file instanceof TFolder ? file.path + "/" : file.path;
+      if (path.toLowerCase().includes(lower) && !existing.has(path)) {
+        results.push(path);
+        if (results.length >= 20) break;
+      }
+    }
+    return results;
+  }
+
+  renderSuggestion(path: string, el: HTMLElement): void {
+    el.setText(path);
+  }
+
+  selectSuggestion(path: string, _evt: MouseEvent | KeyboardEvent): void {
+    this.onSelect(path);
+    this.setValue("");
+    this.close();
+  }
+}
+
+// ── Settings interface ────────────────────────────────────────────────────────
 
 export interface CloudSyncSettings {
   serverUrl: string;
   username: string;
   password: string;
-  autoSyncInterval: number; // minutes, 0 = disabled
+  /** -1 = only on change (debounced), 0 = disabled, >0 = interval in minutes */
+  autoSyncInterval: number;
   encryptionPassphrase: string;
   // Stored after login (not user-editable)
   accessToken: string;
   refreshToken: string;
   userId: string;
   deviceId: string;
-  // Encryption salt (generated once, hex-encoded)
+  // Account-wide encryption salt (adopted from server, hex-encoded)
   encryptionSalt: string;
-  // Last sync timestamp
   lastSyncTime: number;
-  // Selective sync: glob patterns to exclude
   excludePatterns: string[];
-  // Paths present in the vault after the last successful sync.
-  // Used to detect locally deleted files between syncs.
   lastSyncedPaths: string[];
 }
 
@@ -35,13 +77,11 @@ export const DEFAULT_SETTINGS: CloudSyncSettings = {
   deviceId: "",
   encryptionSalt: "",
   lastSyncTime: 0,
-  excludePatterns: [
-    ".obsidian/workspace.json",
-    ".obsidian/workspace-mobile.json",
-    ".trash/",
-  ],
+  excludePatterns: [],
   lastSyncedPaths: [],
 };
+
+// ── Settings tab ──────────────────────────────────────────────────────────────
 
 export class CloudSyncSettingTab extends PluginSettingTab {
   plugin: CloudSyncPlugin;
@@ -58,7 +98,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h2", { text: "CloudSync Settings" });
 
-    // Connection status
+    // Connection status banner
     const isLoggedIn = !!this.plugin.settings.accessToken;
     const statusEl = containerEl.createDiv({
       cls: `connection-status ${isLoggedIn ? "connected" : "disconnected"}`,
@@ -69,7 +109,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
         : "Not connected"
     );
 
-    // Server configuration
+    // ── Server ──────────────────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Server" });
 
     new Setting(containerEl)
@@ -85,12 +125,11 @@ export class CloudSyncSettingTab extends PluginSettingTab {
           })
       );
 
-    // Authentication
+    // ── Authentication ───────────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Authentication" });
 
     new Setting(containerEl)
       .setName("Username")
-      .setDesc("Your account username")
       .addText((text) =>
         text
           .setPlaceholder("username")
@@ -103,7 +142,6 @@ export class CloudSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Password")
-      .setDesc("Your account password")
       .addText((text) => {
         text.inputEl.type = "password";
         text
@@ -116,8 +154,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Login")
-      .setDesc("Log in to the CloudSync server")
+      .setName("Account")
       .addButton((btn) =>
         btn.setButtonText("Login").onClick(async () => {
           try {
@@ -126,7 +163,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
             this.display();
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
-            new Notice(`CloudSync: Login failed - ${msg}`);
+            new Notice(`CloudSync: Login failed — ${msg}`);
           }
         })
       )
@@ -138,15 +175,15 @@ export class CloudSyncSettingTab extends PluginSettingTab {
             this.display();
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
-            new Notice(`CloudSync: Registration failed - ${msg}`);
+            new Notice(`CloudSync: Registration failed — ${msg}`);
           }
         })
       );
 
     if (isLoggedIn) {
       new Setting(containerEl)
-        .setName("Logout")
-        .setDesc("Log out and clear stored tokens")
+        .setName("Session")
+        .setDesc("Clears stored tokens from this device")
         .addButton((btn) =>
           btn
             .setButtonText("Logout")
@@ -169,123 +206,163 @@ export class CloudSyncSettingTab extends PluginSettingTab {
         );
     }
 
-    // Encryption
+    // ── Encryption ───────────────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Encryption" });
 
-    new Setting(containerEl)
-      .setName("Encryption passphrase")
-      .setDesc(
-        "Files are encrypted client-side with AES-256-GCM before uploading. " +
-          "Leave empty to disable encryption. " +
-          "WARNING: If you lose this passphrase, your data cannot be recovered."
-      )
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text
-          .setPlaceholder("encryption passphrase")
-          .setValue(this.plugin.settings.encryptionPassphrase)
-          .onChange(async (value) => {
-            this.plugin.settings.encryptionPassphrase = value;
-            await this.plugin.saveSettings();
-          });
-      });
+    const encryptionActive = !!this.plugin.settings.encryptionSalt;
 
-    if (this.plugin.settings.encryptionPassphrase && isLoggedIn) {
+    if (encryptionActive) {
+      // Locked — show status and change option only
       new Setting(containerEl)
-        .setName("Change passphrase")
-        .setDesc(
-          "Re-encrypts all vault files with a new passphrase, then triggers a full re-upload. " +
-            "This will take time proportional to your vault size."
-        )
+        .setName("Encryption")
+        .setDesc("Active — files are encrypted with AES-256-GCM before leaving this device. All synced devices use the same key.")
         .addButton((btn) =>
           btn
             .setButtonText("Change Passphrase")
             .setWarning()
             .onClick(async () => {
-              const newPassphrase = prompt(
-                "Enter new encryption passphrase:"
-              );
+              const newPassphrase = prompt("Enter new encryption passphrase:");
               if (!newPassphrase) return;
-              const confirm = prompt(
-                "Confirm new passphrase (type it again):"
-              );
+              const confirm = prompt("Confirm new passphrase:");
               if (newPassphrase !== confirm) {
                 new Notice("CloudSync: Passphrases do not match");
                 return;
               }
               try {
                 await this.plugin.changePassphrase(newPassphrase);
-                new Notice(
-                  "CloudSync: Passphrase changed. Full re-upload will begin."
-                );
+                new Notice("CloudSync: Passphrase changed. Re-uploading all files…");
                 this.display();
               } catch (e: unknown) {
                 const msg = e instanceof Error ? e.message : String(e);
-                new Notice(`CloudSync: Passphrase change failed - ${msg}`);
+                new Notice(`CloudSync: Passphrase change failed — ${msg}`);
               }
             })
         );
+    } else {
+      // Not yet active — allow setting a passphrase
+      const pendingNote = this.plugin.settings.encryptionPassphrase
+        ? " Passphrase is set and will activate on the next sync."
+        : "";
+      new Setting(containerEl)
+        .setName("Encryption passphrase")
+        .setDesc(
+          "Encrypt all files client-side before uploading. Leave empty to sync without encryption. " +
+          "All devices must use the same passphrase." +
+          pendingNote
+        )
+        .addText((text) => {
+          text.inputEl.type = "password";
+          text
+            .setPlaceholder("Enter a passphrase…")
+            .setValue(this.plugin.settings.encryptionPassphrase)
+            .onChange(async (value) => {
+              this.plugin.settings.encryptionPassphrase = value;
+              await this.plugin.saveSettings();
+            });
+        });
     }
 
-    // Sync options
+    // ── Sync ────────────────────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Sync" });
 
     new Setting(containerEl)
-      .setName("Auto-sync interval")
-      .setDesc(
-        "How often to automatically sync (in minutes). Set to 0 to disable auto-sync."
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder("5")
+      .setName("Auto-sync")
+      .setDesc("When to automatically sync changes to the server.")
+      .addDropdown((dd) =>
+        dd
+          .addOption("0", "Disabled")
+          .addOption("-1", "Only on change")
+          .addOption("5", "Every 5 minutes")
+          .addOption("10", "Every 10 minutes")
+          .addOption("15", "Every 15 minutes")
+          .addOption("30", "Every 30 minutes")
+          .addOption("60", "Every hour")
           .setValue(String(this.plugin.settings.autoSyncInterval))
           .onChange(async (value) => {
-            const num = parseInt(value, 10);
-            if (!isNaN(num) && num >= 0) {
-              this.plugin.settings.autoSyncInterval = num;
-              await this.plugin.saveSettings();
-              this.plugin.restartAutoSync();
-            }
+            this.plugin.settings.autoSyncInterval = parseInt(value, 10);
+            await this.plugin.saveSettings();
+            this.plugin.restartAutoSync();
           })
       );
 
-    // Selective sync
-    new Setting(containerEl)
-      .setName("Exclude patterns")
-      .setDesc(
-        "File paths to exclude from sync (one per line). Supports simple glob patterns: " +
-          "use * for wildcard, end with / to match folders."
-      )
-      .addTextArea((text) => {
-        text.inputEl.rows = 5;
-        text.inputEl.cols = 40;
-        text
-          .setPlaceholder(
-            ".obsidian/workspace.json\n.obsidian/workspace-mobile.json\n.trash/"
-          )
-          .setValue(this.plugin.settings.excludePatterns.join("\n"))
-          .onChange(async (value) => {
-            this.plugin.settings.excludePatterns = value
-              .split("\n")
-              .map((s) => s.trim())
-              .filter((s) => s.length > 0);
-            await this.plugin.saveSettings();
-          });
-      });
-
-    // Last sync info
     if (this.plugin.settings.lastSyncTime > 0) {
-      const lastSync = new Date(
-        this.plugin.settings.lastSyncTime
-      ).toLocaleString();
       new Setting(containerEl)
         .setName("Last sync")
-        .setDesc(lastSync)
+        .setDesc(new Date(this.plugin.settings.lastSyncTime).toLocaleString())
         .addButton((btn) =>
           btn.setButtonText("Sync now").onClick(async () => {
             await this.plugin.syncNow();
           })
         );
+    } else {
+      new Setting(containerEl)
+        .setName("Manual sync")
+        .addButton((btn) =>
+          btn.setButtonText("Sync now").onClick(async () => {
+            await this.plugin.syncNow();
+          })
+        );
+    }
+
+    // ── Exclude from sync ────────────────────────────────────────────────────
+    containerEl.createEl("h3", { text: "Exclude from sync" });
+
+    // Chips container — rendered first, updated in-place when list changes
+    const chipsContainer = containerEl.createDiv({ cls: "cloudsync-chip-list" });
+    this.renderChips(chipsContainer);
+
+    // File/folder search input
+    let addText: { getValue: () => string; setValue: (v: string) => typeof addText };
+    new Setting(containerEl)
+      .setName("Add exclusion")
+      .setDesc("Search vault files and folders, or type a glob pattern (e.g. *.tmp) and press Enter.")
+      .addText((text) => {
+        text.setPlaceholder("Search files and folders…");
+        addText = text;
+
+        // Vault path suggestions
+        new FileFolderSuggest(this.app, text.inputEl, this.plugin, async (path) => {
+          await this.addPattern(path, chipsContainer);
+        });
+
+        // Custom pattern entry via Enter
+        text.inputEl.addEventListener("keydown", async (e: KeyboardEvent) => {
+          if (e.key === "Enter") {
+            const val = text.getValue().trim();
+            if (val) {
+              await this.addPattern(val, chipsContainer);
+              text.setValue("");
+            }
+          }
+        });
+      });
+  }
+
+  private async addPattern(pattern: string, chipsContainer: HTMLElement): Promise<void> {
+    if (!this.plugin.settings.excludePatterns.includes(pattern)) {
+      this.plugin.settings.excludePatterns.push(pattern);
+      await this.plugin.saveSettings();
+      this.renderChips(chipsContainer);
+    }
+  }
+
+  private renderChips(container: HTMLElement): void {
+    container.empty();
+    if (this.plugin.settings.excludePatterns.length === 0) {
+      container.createEl("div", { text: "No exclusions added.", cls: "cloudsync-chip-empty" });
+      return;
+    }
+    for (const pattern of [...this.plugin.settings.excludePatterns]) {
+      const chip = container.createDiv({ cls: "cloudsync-chip" });
+      chip.createEl("span", { text: pattern, cls: "cloudsync-chip-text" });
+      const btn = chip.createEl("button", { cls: "cloudsync-chip-remove", text: "×" });
+      btn.setAttribute("aria-label", `Remove ${pattern}`);
+      btn.addEventListener("click", async () => {
+        this.plugin.settings.excludePatterns =
+          this.plugin.settings.excludePatterns.filter((p) => p !== pattern);
+        await this.plugin.saveSettings();
+        this.renderChips(container);
+      });
     }
   }
 }

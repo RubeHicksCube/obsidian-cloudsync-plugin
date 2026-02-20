@@ -54,3 +54,57 @@
   border: 1px solid var(--text-error);
   color: var(--text-error);
 }
+
+/* Exclude-pattern chips */
+.cloudsync-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0 4px;
+}
+
+.cloudsync-chip-empty {
+  color: var(--text-muted);
+  font-size: 0.875em;
+  padding: 4px 0;
+}
+
+.cloudsync-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 8px;
+  border-radius: 12px;
+  background-color: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  font-size: 0.875em;
+  max-width: 100%;
+}
+
+.cloudsync-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloudsync-chip-remove {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.cloudsync-chip-remove:hover {
+  background-color: var(--background-modifier-error);
+  color: var(--text-error);
+}
