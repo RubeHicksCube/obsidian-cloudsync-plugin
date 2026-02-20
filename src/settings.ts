@@ -18,6 +18,9 @@ export interface CloudSyncSettings {
   lastSyncTime: number;
   // Selective sync: glob patterns to exclude
   excludePatterns: string[];
+  // Paths present in the vault after the last successful sync.
+  // Used to detect locally deleted files between syncs.
+  lastSyncedPaths: string[];
 }
 
 export const DEFAULT_SETTINGS: CloudSyncSettings = {
@@ -37,6 +40,7 @@ export const DEFAULT_SETTINGS: CloudSyncSettings = {
     ".obsidian/workspace-mobile.json",
     ".trash/",
   ],
+  lastSyncedPaths: [],
 };
 
 export class CloudSyncSettingTab extends PluginSettingTab {

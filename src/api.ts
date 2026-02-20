@@ -155,10 +155,10 @@ export class CloudSyncAPI {
 
   // ── Sync endpoints ──
 
-  async delta(files: FileManifestEntry[]): Promise<DeltaResponse> {
+  async delta(files: FileManifestEntry[], deletedPaths: string[] = []): Promise<DeltaResponse> {
     return (await this.authRequest("POST", "/api/sync/delta", {
       files,
-      device_id: this.plugin.settings.deviceId,
+      deleted_paths: deletedPaths,
     })) as DeltaResponse;
   }
 

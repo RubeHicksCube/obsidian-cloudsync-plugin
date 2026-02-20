@@ -71,20 +71,45 @@ export class SyncEngine {
         `Checking ${manifest.length} files...`
       );
 
-      // 2. Get delta instructions from server
-      const delta = await this.plugin.api.delta(manifest);
+      // 2. Compute explicitly deleted paths: files that were present after the
+      // last successful sync but are no longer in the vault.
+      //
+      // Safety guard: if more than 50% of last-synced files appear missing,
+      // treat it as a possible accidental vault wipe and send no deletions.
+      // The server will respond with Download instructions for the missing files,
+      // restoring them rather than propagating the (likely accidental) deletion.
+      const currentPathSet = new Set(manifest.map((f) => f.path));
+      const lastPaths = this.plugin.settings.lastSyncedPaths ?? [];
+      const deletedPaths: string[] = [];
+      if (lastPaths.length > 0) {
+        const candidates = lastPaths.filter((p) => !currentPathSet.has(p));
+        const ratio = candidates.length / lastPaths.length;
+        if (ratio <= 0.5) {
+          deletedPaths.push(...candidates);
+        } else {
+          console.warn(
+            `CloudSync: ${candidates.length}/${lastPaths.length} tracked files appear deleted — ` +
+            `ratio ${(ratio * 100).toFixed(0)}% exceeds 50% threshold, skipping explicit deletes ` +
+            `(treating as possible vault wipe; server will send Download instructions instead)`
+          );
+        }
+      }
+
+      // 3. Get delta instructions from server
+      const delta = await this.plugin.api.delta(manifest, deletedPaths);
 
       if (delta.instructions.length === 0) {
         // Everything is in sync
         await this.plugin.api.complete();
         this.plugin.settings.lastSyncTime = Date.now();
+        this.plugin.settings.lastSyncedPaths = manifest.map((f) => f.path);
         await this.plugin.saveSettings();
         this.dirty = false;
         this.plugin.statusBar.setState("idle");
         return;
       }
 
-      // 3. Process instructions
+      // 4. Process instructions
       let uploaded = 0;
       let downloaded = 0;
       let deleted = 0;
@@ -150,13 +175,14 @@ export class SyncEngine {
         }
       }
 
-      // 4. Complete sync — only advance the server cursor if all downloads succeeded.
-      // Skipping complete() when downloads failed keeps has_synced_before = false for
-      // fresh devices, preventing the next auto-sync from treating missing files as
-      // intentional local deletions and propagating them to the server.
+      // 5. Complete sync — only advance the server cursor if all downloads succeeded.
+      // Skipping complete() when downloads failed prevents the server cursor from
+      // advancing on a partial sync, so the next auto-sync retries the missing files.
       if (downloadErrors === 0) {
         await this.plugin.api.complete();
         this.plugin.settings.lastSyncTime = Date.now();
+        // Record the current vault state so the next sync can detect local deletions.
+        this.plugin.settings.lastSyncedPaths = manifest.map((f) => f.path);
         await this.plugin.saveSettings();
         this.dirty = false;
       } else {
