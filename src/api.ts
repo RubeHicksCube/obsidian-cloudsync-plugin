@@ -341,30 +341,48 @@ export class CloudSyncAPI {
    * Obsidian's requestUrl doesn't natively support multipart, so we
    * manually build the multipart body.
    */
+  /**
+   * Encode an ArrayBuffer to a base64 string without spreading large arrays
+   * (avoids maximum call stack exceeded for files > a few MB).
+   */
+  private arrayBufferToBase64(buffer: ArrayBuffer): string {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunk = 8192;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
   private async uploadRequest(
     path: string,
     filePath: string,
     fileData: ArrayBuffer,
     plaintextHash?: string
   ): Promise<unknown> {
-    // Send file as raw binary body; path and hash go in query parameters.
-    // This avoids multipart/form-data parsing entirely, which can fail
-    // in some proxy configurations (Cloudflare Tunnel, etc.).
-    const params = new URLSearchParams({ path: filePath });
-    if (plaintextHash) params.set("hash", plaintextHash);
+    // Encode the file as base64 inside a JSON body.
+    // This avoids both multipart parsing issues and Cloudflare WAF rules
+    // that block or modify application/octet-stream POST bodies.
+    // JSON is treated as normal API traffic and passes through unchanged.
+    const body: Record<string, string> = {
+      path: filePath,
+      data: this.arrayBufferToBase64(fileData),
+    };
+    if (plaintextHash) body.hash = plaintextHash;
 
     const headers: Record<string, string> = {
-      "Content-Type": "application/octet-stream",
+      "Content-Type": "application/json",
     };
     if (this.accessToken) {
       headers["Authorization"] = `Bearer ${this.accessToken}`;
     }
 
     const resp: RequestUrlResponse = await requestUrl({
-      url: `${this.baseUrl}${path}?${params.toString()}`,
+      url: `${this.baseUrl}${path}`,
       method: "POST",
       headers,
-      body: fileData,
+      body: JSON.stringify(body),
       throw: false,
     });
 
@@ -375,7 +393,11 @@ export class CloudSyncAPI {
         if (errBody && errBody.error) message = errBody.error;
         else if (errBody && errBody.message) message = errBody.message;
       } catch {
-        // use status
+        // Non-JSON error body (e.g. Cloudflare HTML page) — show a snippet
+        try {
+          const snippet = resp.text?.slice(0, 120);
+          if (snippet) message = snippet;
+        } catch { /* ignore */ }
       }
       throw new ApiError(message, resp.status);
     }
