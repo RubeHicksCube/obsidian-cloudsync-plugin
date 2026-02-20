@@ -269,23 +269,26 @@ export default class CloudSyncPlugin extends Plugin {
   }
 
   /**
-   * If the server returned an encrypted vault key and this device has no
-   * passphrase configured yet, decrypt and store it automatically.
-   * Called after a successful login.
+   * Decrypt the vault key from a login/refresh response and apply it.
+   * Always called on login — if the server has a vault key, this device
+   * adopts the account passphrase so encrypted files are readable immediately.
+   * Called after every successful login or token refresh.
    */
   async handleVaultKeyFromAuth(authResp: AuthResponse): Promise<void> {
     if (!authResp.encrypted_vault_key) return;
-    if (this.settings.encryptionPassphrase) return; // already configured
     const { password, username } = this.settings;
     if (!password || !username) return;
     try {
       const accountKey = await deriveAccountKey(password, username);
       const passphrase = await decryptVaultKey(authResp.encrypted_vault_key, accountKey);
-      this.settings.encryptionPassphrase = passphrase;
-      await this.saveSettings();
-      new Notice("CloudSync: Encryption passphrase loaded from account — encryption is active.");
+      if (passphrase !== this.settings.encryptionPassphrase) {
+        this.settings.encryptionPassphrase = passphrase;
+        await this.saveSettings();
+        new Notice("CloudSync: Encryption passphrase synced from account — encrypted files are now readable.");
+      }
     } catch (e) {
-      console.warn("CloudSync: Could not decrypt vault key (wrong password?):", e);
+      console.warn("CloudSync: Could not decrypt vault key:", e);
+      new Notice("CloudSync: Could not load encryption key from account. Check your password is saved correctly in settings.");
     }
   }
 }

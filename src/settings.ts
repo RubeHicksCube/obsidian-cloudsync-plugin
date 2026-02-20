@@ -282,10 +282,11 @@ export class CloudSyncSettingTab extends PluginSettingTab {
     // ── Encryption ───────────────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Encryption" });
 
-    const encryptionActive = !!this.plugin.settings.encryptionSalt;
+    const hasSalt = !!this.plugin.settings.encryptionSalt;
+    const hasPassphrase = !!this.plugin.settings.encryptionPassphrase;
 
-    if (encryptionActive) {
-      // Locked — show status and change option only
+    if (hasSalt && hasPassphrase) {
+      // Fully active — show status and change option only
       new Setting(containerEl)
         .setName("Encryption")
         .setDesc("Active — files are encrypted with AES-256-GCM before leaving this device. All synced devices use the same key.")
@@ -297,9 +298,41 @@ export class CloudSyncSettingTab extends PluginSettingTab {
               new ChangePassphraseModal(this.plugin.app, this.plugin).open();
             })
         );
+    } else if (hasSalt && !hasPassphrase) {
+      // Account has encryption configured but this device is missing the passphrase.
+      // This is the "windings" state — files will download but be unreadable.
+      new Setting(containerEl)
+        .setName("Encryption — passphrase missing")
+        .setDesc(
+          "This account has encryption enabled but no passphrase is set on this device. " +
+          "Files will download as garbled data until the passphrase is loaded. " +
+          "Click 'Load from account' to fetch it automatically using your login password."
+        )
+        .addButton((btn) =>
+          btn
+            .setButtonText("Load from account")
+            .setCta()
+            .onClick(async () => {
+              try {
+                const authResp = await this.plugin.api.login();
+                await this.plugin.handleVaultKeyFromAuth(authResp);
+                this.display();
+              } catch (e: unknown) {
+                const msg = e instanceof Error ? e.message : String(e);
+                new Notice(`CloudSync: Could not load encryption key — ${msg}`);
+              }
+            })
+        )
+        .addButton((btn) =>
+          btn
+            .setButtonText("Enter manually")
+            .onClick(() => {
+              new ChangePassphraseModal(this.plugin.app, this.plugin).open();
+            })
+        );
     } else {
       // Not yet active — allow setting a passphrase
-      const pendingNote = this.plugin.settings.encryptionPassphrase
+      const pendingNote = hasPassphrase
         ? " Passphrase is set and will activate on the next sync."
         : "";
       new Setting(containerEl)

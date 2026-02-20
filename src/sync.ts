@@ -647,6 +647,12 @@ export class SyncEngine {
         this.plugin.crypto.clearCache();
         await this.plugin.saveSettings();
       }
+      // Ensure the vault key is on the server so other devices can auto-configure.
+      // This covers users who had encryption before the vault key feature was added,
+      // and also handles silent failures from earlier push attempts.
+      if (this.plugin.settings.encryptionPassphrase) {
+        void this.plugin.pushVaultKey();
+      }
     } else if (this.plugin.settings.encryptionPassphrase) {
       // Case 2: first device to set up encryption — push our salt.
       if (!this.plugin.settings.encryptionSalt) {
