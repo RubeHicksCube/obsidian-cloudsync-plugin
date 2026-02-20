@@ -347,66 +347,24 @@ export class CloudSyncAPI {
     fileData: ArrayBuffer,
     plaintextHash?: string
   ): Promise<unknown> {
-    const boundary = "----CloudSync" + Date.now().toString(36) + Math.random().toString(36);
-
-    // Build multipart body manually
-    const encoder = new TextEncoder();
-
-    const pathPart =
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="path"\r\n\r\n` +
-      `${filePath}\r\n`;
-
-    const hashPart = plaintextHash
-      ? `--${boundary}\r\n` +
-        `Content-Disposition: form-data; name="hash"\r\n\r\n` +
-        `${plaintextHash}\r\n`
-      : "";
-
-    const filePart =
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="file"; filename="${filePath.split("/").pop()}"\r\n` +
-      `Content-Type: application/octet-stream\r\n\r\n`;
-
-    const ending = `\r\n--${boundary}--\r\n`;
-
-    const pathBytes = encoder.encode(pathPart);
-    const hashBytes = encoder.encode(hashPart);
-    const filePartBytes = encoder.encode(filePart);
-    const endingBytes = encoder.encode(ending);
-    // Use a view over the existing buffer rather than copying into a new array
-    const fileBytes = new Uint8Array(fileData);
-
-    // Combine all parts into a single buffer.
-    // fileBytes is a view (no copy) so peak memory is roughly 1× file size
-    // for the headers/trailer plus the file data itself.
-    const totalLength =
-      pathBytes.byteLength +
-      hashBytes.byteLength +
-      filePartBytes.byteLength +
-      fileBytes.byteLength +
-      endingBytes.byteLength;
-
-    const combined = new Uint8Array(totalLength);
-    let offset = 0;
-    combined.set(pathBytes, offset);   offset += pathBytes.byteLength;
-    combined.set(hashBytes, offset);   offset += hashBytes.byteLength;
-    combined.set(filePartBytes, offset); offset += filePartBytes.byteLength;
-    combined.set(fileBytes, offset);   offset += fileBytes.byteLength;
-    combined.set(endingBytes, offset);
+    // Send file as raw binary body; path and hash go in query parameters.
+    // This avoids multipart/form-data parsing entirely, which can fail
+    // in some proxy configurations (Cloudflare Tunnel, etc.).
+    const params = new URLSearchParams({ path: filePath });
+    if (plaintextHash) params.set("hash", plaintextHash);
 
     const headers: Record<string, string> = {
-      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Content-Type": "application/octet-stream",
     };
     if (this.accessToken) {
       headers["Authorization"] = `Bearer ${this.accessToken}`;
     }
 
     const resp: RequestUrlResponse = await requestUrl({
-      url: `${this.baseUrl}${path}`,
+      url: `${this.baseUrl}${path}?${params.toString()}`,
       method: "POST",
       headers,
-      body: combined.buffer,
+      body: fileData,
       throw: false,
     });
 
