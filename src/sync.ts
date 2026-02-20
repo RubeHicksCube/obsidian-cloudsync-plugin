@@ -350,6 +350,16 @@ export class SyncEngine {
       throw new Error(`No file_id for download: ${instruction.path}`);
     }
 
+    // Guard: if the server has encryption configured but this device has no
+    // passphrase set, writing the raw encrypted blob would corrupt the vault
+    // file. Throw a descriptive error so the user knows what to fix.
+    if (this.plugin.settings.encryptionSalt && !this.plugin.settings.encryptionPassphrase) {
+      throw new Error(
+        `Cannot download "${instruction.path}" — server has encryption configured but no ` +
+        `passphrase is set on this device. Enter your encryption passphrase in plugin settings.`
+      );
+    }
+
     let data = await this.plugin.api.download(instruction.file_id);
 
     // Decrypt if passphrase is set

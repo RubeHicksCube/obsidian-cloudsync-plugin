@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, Notice, AbstractInputSuggest, TFolder } from "obsidian";
+import { App, Modal, PluginSettingTab, Setting, Notice, AbstractInputSuggest, TFolder } from "obsidian";
 import type CloudSyncPlugin from "./main";
 
 // ── Vault path suggest ────────────────────────────────────────────────────────
@@ -80,6 +80,77 @@ export const DEFAULT_SETTINGS: CloudSyncSettings = {
   excludePatterns: [],
   lastSyncedPaths: [],
 };
+
+// ── Change Passphrase Modal ────────────────────────────────────────────────────
+
+class ChangePassphraseModal extends Modal {
+  private plugin: CloudSyncPlugin;
+
+  constructor(app: App, plugin: CloudSyncPlugin) {
+    super(app);
+    this.plugin = plugin;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.createEl("h2", { text: "Change Encryption Passphrase" });
+    contentEl.createEl("p", {
+      text: "Warning: this re-encrypts all files with the new passphrase. All other devices must update their passphrase before they can sync again.",
+      attr: { style: "color: var(--text-muted); margin-bottom: 12px;" },
+    });
+
+    let newPassphrase = "";
+    let confirmPassphrase = "";
+
+    new Setting(contentEl)
+      .setName("New passphrase")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text.setPlaceholder("Enter new passphrase…");
+        text.onChange((value) => { newPassphrase = value; });
+      });
+
+    new Setting(contentEl)
+      .setName("Confirm passphrase")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text.setPlaceholder("Confirm new passphrase…");
+        text.onChange((value) => { confirmPassphrase = value; });
+      });
+
+    new Setting(contentEl)
+      .addButton((btn) =>
+        btn
+          .setButtonText("Change Passphrase")
+          .setWarning()
+          .onClick(async () => {
+            if (!newPassphrase) {
+              new Notice("CloudSync: Passphrase cannot be empty");
+              return;
+            }
+            if (newPassphrase !== confirmPassphrase) {
+              new Notice("CloudSync: Passphrases do not match");
+              return;
+            }
+            this.close();
+            try {
+              await this.plugin.changePassphrase(newPassphrase);
+              new Notice("CloudSync: Passphrase changed. Re-uploading all files…");
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e);
+              new Notice(`CloudSync: Passphrase change failed — ${msg}`);
+            }
+          })
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Cancel").onClick(() => this.close())
+      );
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
 
 // ── Settings tab ──────────────────────────────────────────────────────────────
 
@@ -220,22 +291,8 @@ export class CloudSyncSettingTab extends PluginSettingTab {
           btn
             .setButtonText("Change Passphrase")
             .setWarning()
-            .onClick(async () => {
-              const newPassphrase = prompt("Enter new encryption passphrase:");
-              if (!newPassphrase) return;
-              const confirm = prompt("Confirm new passphrase:");
-              if (newPassphrase !== confirm) {
-                new Notice("CloudSync: Passphrases do not match");
-                return;
-              }
-              try {
-                await this.plugin.changePassphrase(newPassphrase);
-                new Notice("CloudSync: Passphrase changed. Re-uploading all files…");
-                this.display();
-              } catch (e: unknown) {
-                const msg = e instanceof Error ? e.message : String(e);
-                new Notice(`CloudSync: Passphrase change failed — ${msg}`);
-              }
+            .onClick(() => {
+              new ChangePassphraseModal(this.plugin.app, this.plugin).open();
             })
         );
     } else {
