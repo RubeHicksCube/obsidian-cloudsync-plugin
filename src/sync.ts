@@ -90,6 +90,7 @@ export class SyncEngine {
       let deleted = 0;
       let conflicts = 0;
       let errors = 0;
+      let downloadErrors = 0; // tracked separately: download failures block cursor advance
       const total = delta.instructions.length;
 
       for (let i = 0; i < delta.instructions.length; i++) {
@@ -139,6 +140,9 @@ export class SyncEngine {
           }
         } catch (e: unknown) {
           errors++;
+          if (instruction.action === "download" || instruction.action === "conflict") {
+            downloadErrors++;
+          }
           const msg = e instanceof Error ? e.message : String(e);
           const status = (e as { status?: number }).status;
           const prefix = status ? `[HTTP ${status}] ` : "";
@@ -146,11 +150,20 @@ export class SyncEngine {
         }
       }
 
-      // 4. Complete sync
-      await this.plugin.api.complete();
-      this.plugin.settings.lastSyncTime = Date.now();
-      await this.plugin.saveSettings();
-      this.dirty = false;
+      // 4. Complete sync — only advance the server cursor if all downloads succeeded.
+      // Skipping complete() when downloads failed keeps has_synced_before = false for
+      // fresh devices, preventing the next auto-sync from treating missing files as
+      // intentional local deletions and propagating them to the server.
+      if (downloadErrors === 0) {
+        await this.plugin.api.complete();
+        this.plugin.settings.lastSyncTime = Date.now();
+        await this.plugin.saveSettings();
+        this.dirty = false;
+      } else {
+        console.warn(
+          `CloudSync: ${downloadErrors} download(s) failed — skipping complete() so the sync cursor is not advanced. Will retry on next sync.`
+        );
+      }
 
       // Report results (skip notification in silent mode when nothing happened)
       const parts: string[] = [];
