@@ -140,7 +140,9 @@ export class SyncEngine {
         } catch (e: unknown) {
           errors++;
           const msg = e instanceof Error ? e.message : String(e);
-          console.error(`CloudSync: Error processing ${instruction.path}:`, msg);
+          const status = (e as { status?: number }).status;
+          const prefix = status ? `[HTTP ${status}] ` : "";
+          console.error(`CloudSync: Error processing ${instruction.path}: ${prefix}${msg}`);
         }
       }
 
