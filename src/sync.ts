@@ -360,15 +360,56 @@ export class SyncEngine {
       );
     }
 
-    let data = await this.plugin.api.download(instruction.file_id);
+    const rawData = await this.plugin.api.download(instruction.file_id);
+    let data: ArrayBuffer;
 
     // Decrypt if passphrase is set
     if (this.isEncryptionEnabled()) {
-      data = await this.plugin.crypto.decrypt(
-        data,
-        this.plugin.settings.encryptionPassphrase,
-        this.plugin.settings.encryptionSalt
-      );
+      try {
+        data = await this.plugin.crypto.decrypt(
+          rawData,
+          this.plugin.settings.encryptionPassphrase,
+          this.plugin.settings.encryptionSalt
+        );
+      } catch (decryptErr) {
+        // Decryption failed — the blob may have been uploaded before encryption
+        // was configured (stored as plaintext). Try to recover gracefully.
+        const rawHash = await sha256Hex(rawData);
+        const vault = this.plugin.app.vault;
+        const normalizedPath = normalizePath(instruction.path);
+        const existing = vault.getAbstractFileByPath(normalizedPath);
+
+        if (existing instanceof TFile) {
+          const localData = await vault.readBinary(existing);
+          const localHash = await sha256Hex(localData);
+
+          if (localHash === rawHash) {
+            // Local file already has the same content as the raw (plaintext) blob.
+            // This file was uploaded without encryption; local copy is correct.
+            console.warn(
+              `CloudSync: Decryption skipped for "${instruction.path}" — ` +
+              `blob matches local content (uploaded before encryption was enabled). Fixing server hash.`
+            );
+            await this.plugin.api.fixHash(instruction.file_id, localHash);
+            return false;
+          }
+        }
+
+        // If the raw blob hash matches the server's recorded hash the blob is
+        // genuinely plaintext (not an encryption failure) — use it as-is.
+        if (instruction.server_hash && rawHash === instruction.server_hash) {
+          console.warn(
+            `CloudSync: Using plaintext blob for "${instruction.path}" — ` +
+            `file was uploaded before encryption was enabled.`
+          );
+          data = rawData;
+        } else {
+          // Truly unrecoverable — wrong passphrase or corrupted blob.
+          throw decryptErr;
+        }
+      }
+    } else {
+      data = rawData;
     }
 
     const vault = this.plugin.app.vault;
