@@ -102,7 +102,7 @@ export class SyncEngine {
                 total,
                 `Uploading: ${instruction.path}`
               );
-              await this.handleUpload(instruction);
+              await this.withRetry(() => this.handleUpload(instruction), instruction.path);
               uploaded++;
               break;
 
@@ -474,6 +474,39 @@ export class SyncEngine {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Retry an async operation up to maxAttempts times with linear backoff.
+   * Retries on network errors and 5xx responses. Does not retry on
+   * definitive client errors (401, 403, 404, 413) that won't improve.
+   */
+  private async withRetry<T>(
+    fn: () => Promise<T>,
+    path: string,
+    maxAttempts = 3
+  ): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await fn();
+      } catch (e: unknown) {
+        lastError = e;
+        const status = (e as { status?: number }).status;
+        // Don't retry definitive client errors
+        if (status === 401 || status === 403 || status === 404 || status === 413) {
+          throw e;
+        }
+        if (attempt < maxAttempts) {
+          const delay = attempt * 2000; // 2 s, 4 s
+          console.warn(
+            `CloudSync: Upload attempt ${attempt} failed for ${path} — retrying in ${delay / 1000}s`
+          );
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+    }
+    throw lastError;
   }
 
   /**
