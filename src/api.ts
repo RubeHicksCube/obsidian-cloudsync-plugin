@@ -11,6 +11,11 @@ export interface AuthResponse {
   is_admin: boolean;
   /** Account-wide encryption salt. Empty string means not yet configured. */
   encryption_salt?: string;
+  /**
+   * Vault passphrase encrypted client-side with a key derived from the account
+   * password. Present once any device has uploaded it. Null until then.
+   */
+  encrypted_vault_key?: string | null;
 }
 
 export interface FileManifestEntry {
@@ -193,6 +198,14 @@ export class CloudSyncAPI {
     return (await this.authRequest("POST", "/api/sync/complete", {
       device_id: this.plugin.settings.deviceId,
     })) as CompleteResponse;
+  }
+
+  /**
+   * Store the client-encrypted vault key on the server.
+   * The server stores it as an opaque blob — it cannot decrypt it.
+   */
+  async setVaultKey(encryptedVaultKey: string): Promise<void> {
+    await this.authRequest("PUT", "/api/auth/vault-key", { encrypted_vault_key: encryptedVaultKey });
   }
 
   /**

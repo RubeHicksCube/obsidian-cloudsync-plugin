@@ -614,6 +614,8 @@ export class SyncEngine {
       }
       try {
         await this.plugin.api.pushEncryptionSalt(this.plugin.settings.encryptionSalt);
+        // Also push the encrypted vault key so other devices can auto-configure.
+        void this.plugin.pushVaultKey();
       } catch {
         // Non-critical — another device may have set it concurrently
       }

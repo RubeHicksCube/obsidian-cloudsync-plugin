@@ -162,6 +162,77 @@ export function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
+// ── Vault key wrapping (cross-device passphrase sharing) ─────────────────────
+
+/**
+ * Derive a per-account "wrapping key" from the login credentials.
+ * The derivation is client-side only — the server never sees the raw password
+ * or this key. Used to encrypt/decrypt the vault passphrase stored on the server.
+ */
+export async function deriveAccountKey(password: string, username: string): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: enc.encode(username),
+      iterations: 100_000,
+      hash: "SHA-256",
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+/**
+ * Encrypt the vault passphrase with the account wrapping key.
+ * Returns hex-encoded: IV (12 bytes) + AES-256-GCM ciphertext.
+ */
+export async function encryptVaultKey(
+  passphrase: string,
+  accountKey: CryptoKey
+): Promise<string> {
+  const enc = new TextEncoder();
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    accountKey,
+    enc.encode(passphrase)
+  );
+  const result = new Uint8Array(12 + ciphertext.byteLength);
+  result.set(iv, 0);
+  result.set(new Uint8Array(ciphertext), 12);
+  return bytesToHex(result);
+}
+
+/**
+ * Decrypt the vault passphrase from the server-stored hex blob.
+ */
+export async function decryptVaultKey(
+  ciphertextHex: string,
+  accountKey: CryptoKey
+): Promise<string> {
+  const data = hexToBytes(ciphertextHex);
+  if (data.length < 13) throw new Error("Invalid vault key ciphertext");
+  const iv = data.slice(0, 12);
+  const ciphertext = data.slice(12);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    accountKey,
+    ciphertext
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
 /**
  * Compute SHA-256 hash of data, returned as hex string.
  */

@@ -1,6 +1,7 @@
 import { Notice, Plugin, TFile, debounce } from "obsidian";
+import type { AuthResponse } from "./api";
 import { CloudSyncAPI } from "./api";
-import { CryptoEngine } from "./crypto";
+import { CryptoEngine, deriveAccountKey, encryptVaultKey, decryptVaultKey } from "./crypto";
 import {
   CloudSyncSettings,
   CloudSyncSettingTab,
@@ -231,22 +232,60 @@ export default class CloudSyncPlugin extends Plugin {
    * so all files on the server are re-encrypted with the new key.
    */
   async changePassphrase(newPassphrase: string): Promise<void> {
-    // Generate a new salt for the new passphrase
     const newSalt = this.crypto.generateSalt();
 
-    // Update settings and clear the cached key
     this.settings.encryptionPassphrase = newPassphrase;
     this.settings.encryptionSalt = newSalt;
     this.crypto.clearCache();
-    // Reset lastSyncTime so all files are treated as needing re-upload
     this.settings.lastSyncTime = 0;
     await this.saveSettings();
 
-    // Push the new salt to the server with force=true so all other devices
-    // adopt it on their next sync and can decrypt the re-encrypted files.
     await this.api.pushEncryptionSalt(newSalt, true);
 
-    // Re-upload all files encrypted with the new passphrase+salt
+    // Push the re-encrypted vault key so other devices pick up the new passphrase.
+    await this.pushVaultKey();
+
     await this.syncNow();
+  }
+
+  /**
+   * Encrypt the current vault passphrase with a key derived from the account
+   * credentials and store it on the server. Called after passphrase setup or
+   * change so any device that logs in can auto-configure encryption.
+   *
+   * Security: the server stores an opaque AES-256-GCM ciphertext. It cannot
+   * decrypt it without knowing the account password (used for PBKDF2 client-side).
+   */
+  async pushVaultKey(): Promise<void> {
+    const { encryptionPassphrase, password, username } = this.settings;
+    if (!encryptionPassphrase || !password || !username) return;
+    try {
+      const accountKey = await deriveAccountKey(password, username);
+      const ciphertext = await encryptVaultKey(encryptionPassphrase, accountKey);
+      await this.api.setVaultKey(ciphertext);
+    } catch (e) {
+      console.warn("CloudSync: Could not push vault key:", e);
+    }
+  }
+
+  /**
+   * If the server returned an encrypted vault key and this device has no
+   * passphrase configured yet, decrypt and store it automatically.
+   * Called after a successful login.
+   */
+  async handleVaultKeyFromAuth(authResp: AuthResponse): Promise<void> {
+    if (!authResp.encrypted_vault_key) return;
+    if (this.settings.encryptionPassphrase) return; // already configured
+    const { password, username } = this.settings;
+    if (!password || !username) return;
+    try {
+      const accountKey = await deriveAccountKey(password, username);
+      const passphrase = await decryptVaultKey(authResp.encrypted_vault_key, accountKey);
+      this.settings.encryptionPassphrase = passphrase;
+      await this.saveSettings();
+      new Notice("CloudSync: Encryption passphrase loaded from account — encryption is active.");
+    } catch (e) {
+      console.warn("CloudSync: Could not decrypt vault key (wrong password?):", e);
+    }
   }
 }

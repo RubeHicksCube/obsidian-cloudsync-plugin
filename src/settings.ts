@@ -229,7 +229,9 @@ export class CloudSyncSettingTab extends PluginSettingTab {
       .addButton((btn) =>
         btn.setButtonText("Login").onClick(async () => {
           try {
-            await this.plugin.api.login();
+            const authResp = await this.plugin.api.login();
+            // Auto-configure encryption if the server has a stored vault key
+            await this.plugin.handleVaultKeyFromAuth(authResp);
             new Notice("CloudSync: Logged in successfully");
             this.display();
           } catch (e: unknown) {
@@ -315,6 +317,8 @@ export class CloudSyncSettingTab extends PluginSettingTab {
             .onChange(async (value) => {
               this.plugin.settings.encryptionPassphrase = value;
               await this.plugin.saveSettings();
+              // Push encrypted vault key to server so other devices can auto-configure
+              void this.plugin.pushVaultKey();
             });
         });
     }
