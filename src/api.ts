@@ -374,9 +374,12 @@ export class CloudSyncAPI {
     const hashBytes = encoder.encode(hashPart);
     const filePartBytes = encoder.encode(filePart);
     const endingBytes = encoder.encode(ending);
+    // Use a view over the existing buffer rather than copying into a new array
     const fileBytes = new Uint8Array(fileData);
 
-    // Combine all parts
+    // Combine all parts into a single buffer.
+    // fileBytes is a view (no copy) so peak memory is roughly 1× file size
+    // for the headers/trailer plus the file data itself.
     const totalLength =
       pathBytes.byteLength +
       hashBytes.byteLength +
@@ -386,14 +389,10 @@ export class CloudSyncAPI {
 
     const combined = new Uint8Array(totalLength);
     let offset = 0;
-    combined.set(pathBytes, offset);
-    offset += pathBytes.byteLength;
-    combined.set(hashBytes, offset);
-    offset += hashBytes.byteLength;
-    combined.set(filePartBytes, offset);
-    offset += filePartBytes.byteLength;
-    combined.set(fileBytes, offset);
-    offset += fileBytes.byteLength;
+    combined.set(pathBytes, offset);   offset += pathBytes.byteLength;
+    combined.set(hashBytes, offset);   offset += hashBytes.byteLength;
+    combined.set(filePartBytes, offset); offset += filePartBytes.byteLength;
+    combined.set(fileBytes, offset);   offset += fileBytes.byteLength;
     combined.set(endingBytes, offset);
 
     const headers: Record<string, string> = {

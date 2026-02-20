@@ -254,15 +254,19 @@ export class SyncEngine {
 
     const plaintext = await vault.readBinary(file);
     const plaintextHash = await sha256Hex(plaintext);
-    let data: ArrayBuffer = plaintext;
 
-    // Encrypt if passphrase is set
+    // Encrypt if passphrase is set, then drop the plaintext reference so the
+    // GC can reclaim it before the upload. For large files this halves peak
+    // memory usage during the network transfer.
+    let data: ArrayBuffer;
     if (this.isEncryptionEnabled()) {
       data = await this.plugin.crypto.encrypt(
         plaintext,
         this.plugin.settings.encryptionPassphrase,
         this.plugin.settings.encryptionSalt
       );
+    } else {
+      data = plaintext;
     }
 
     await this.plugin.api.upload(instruction.path, data, plaintextHash);
