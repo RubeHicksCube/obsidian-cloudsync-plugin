@@ -1,7 +1,7 @@
 {
   "id": "obsidian-cloudsync",
   "name": "CloudSync",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.0.0",
   "description": "Sync your Obsidian vault with an ObsidianCloudSync server. Supports end-to-end encryption, automatic sync, conflict resolution, and multi-device management.",
   "author": "CloudSync",
