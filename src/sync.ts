@@ -410,15 +410,15 @@ export class SyncEngine {
   }
 
   /**
-   * Handle a delete instruction: propagate local deletion to the server,
-   * or remove the local file if the server says it was deleted remotely.
+   * Handle a delete instruction: the server has already marked this file as
+   * deleted (propagated from another device via deleted_paths). Remove the
+   * local copy so all devices converge on the same state.
+   *
+   * Note: we do NOT call api.deleteFile() here — the server already recorded
+   * the deletion. Calling it again would hit an already-soft-deleted row,
+   * get 0 rows affected, and return 404.
    */
   private async handleDelete(instruction: SyncInstruction): Promise<void> {
-    if (instruction.file_id) {
-      // File exists on server but not locally — tell the server to delete it
-      await this.plugin.api.deleteFile(instruction.file_id);
-    }
-    // Also remove locally if it somehow still exists
     const vault = this.plugin.app.vault;
     const file = vault.getAbstractFileByPath(instruction.path);
     if (file instanceof TFile) {
