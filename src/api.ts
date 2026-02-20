@@ -29,6 +29,8 @@ export interface SyncInstruction {
 export interface DeltaResponse {
   instructions: SyncInstruction[];
   server_time: number;
+  /** Account-wide encryption salt. Empty string = not set yet. */
+  encryption_salt: string;
 }
 
 export interface UploadResponse {
@@ -176,6 +178,14 @@ export class CloudSyncAPI {
 
   async fixHash(fileId: string, hash: string): Promise<void> {
     await this.authRequest("POST", `/api/sync/fix-hash`, { file_id: fileId, hash });
+  }
+
+  /**
+   * Push this device's encryption salt to the server.
+   * The server only accepts it if the account has no salt yet (first device wins).
+   */
+  async setEncryptionSalt(salt: string): Promise<void> {
+    await this.authRequest("PUT", "/api/auth/encryption-salt", { salt });
   }
 
   async complete(): Promise<CompleteResponse> {

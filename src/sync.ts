@@ -98,6 +98,26 @@ export class SyncEngine {
       // 3. Get delta instructions from server
       const delta = await this.plugin.api.delta(manifest, deletedPaths);
 
+      // 3a. Sync encryption salt — must happen BEFORE any downloads so we
+      // decrypt with the correct key in this same sync cycle.
+      //
+      // - Server has a salt, we don't (or ours differs): adopt server's salt.
+      //   This is the common case for a new device joining an existing account.
+      // - Server has no salt, we do: push ours (first device sets the account salt).
+      if (delta.encryption_salt && delta.encryption_salt !== this.plugin.settings.encryptionSalt) {
+        this.plugin.settings.encryptionSalt = delta.encryption_salt;
+        this.plugin.crypto.clearCache();
+        await this.plugin.saveSettings();
+        console.log("CloudSync: Adopted account encryption salt from server");
+      } else if (!delta.encryption_salt && this.plugin.settings.encryptionSalt) {
+        try {
+          await this.plugin.api.setEncryptionSalt(this.plugin.settings.encryptionSalt);
+          console.log("CloudSync: Pushed encryption salt to server");
+        } catch {
+          // Non-critical — another device may have set it concurrently
+        }
+      }
+
       if (delta.instructions.length === 0) {
         // Everything is in sync
         await this.plugin.api.complete();
