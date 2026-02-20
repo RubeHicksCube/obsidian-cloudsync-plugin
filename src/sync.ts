@@ -98,25 +98,9 @@ export class SyncEngine {
       // 3. Get delta instructions from server
       const delta = await this.plugin.api.delta(manifest, deletedPaths);
 
-      // 3a. Sync encryption salt — must happen BEFORE any downloads so we
+      // 3a. Reconcile encryption salt — must happen BEFORE any downloads so we
       // decrypt with the correct key in this same sync cycle.
-      //
-      // - Server has a salt, we don't (or ours differs): adopt server's salt.
-      //   This is the common case for a new device joining an existing account.
-      // - Server has no salt, we do: push ours (first device sets the account salt).
-      if (delta.encryption_salt && delta.encryption_salt !== this.plugin.settings.encryptionSalt) {
-        this.plugin.settings.encryptionSalt = delta.encryption_salt;
-        this.plugin.crypto.clearCache();
-        await this.plugin.saveSettings();
-        console.log("CloudSync: Adopted account encryption salt from server");
-      } else if (!delta.encryption_salt && this.plugin.settings.encryptionSalt) {
-        try {
-          await this.plugin.api.setEncryptionSalt(this.plugin.settings.encryptionSalt);
-          console.log("CloudSync: Pushed encryption salt to server");
-        } catch {
-          // Non-critical — another device may have set it concurrently
-        }
-      }
+      await this.reconcileEncryptionSalt(delta.encryption_salt);
 
       if (delta.instructions.length === 0) {
         // Everything is in sync
@@ -566,6 +550,38 @@ export class SyncEngine {
       }
     }
     throw lastError;
+  }
+
+  /**
+   * Synchronise the local encryption salt with the server's authoritative value.
+   *
+   * Three cases:
+   * 1. Server has a salt → adopt it (clears key cache if it changed).
+   * 2. Server has no salt, user has a passphrase → we are the first device;
+   *    generate a salt if needed, then push it to the server.
+   * 3. Server has no salt, no passphrase → nothing to do.
+   */
+  private async reconcileEncryptionSalt(serverSalt: string): Promise<void> {
+    if (serverSalt) {
+      // Case 1: adopt the server's salt.
+      if (this.plugin.settings.encryptionSalt !== serverSalt) {
+        this.plugin.settings.encryptionSalt = serverSalt;
+        this.plugin.crypto.clearCache();
+        await this.plugin.saveSettings();
+      }
+    } else if (this.plugin.settings.encryptionPassphrase) {
+      // Case 2: first device to set up encryption — push our salt.
+      if (!this.plugin.settings.encryptionSalt) {
+        this.plugin.settings.encryptionSalt = this.plugin.crypto.generateSalt();
+        await this.plugin.saveSettings();
+      }
+      try {
+        await this.plugin.api.pushEncryptionSalt(this.plugin.settings.encryptionSalt);
+      } catch {
+        // Non-critical — another device may have set it concurrently
+      }
+    }
+    // Case 3: no passphrase, no server salt — encryption not configured.
   }
 
   /**

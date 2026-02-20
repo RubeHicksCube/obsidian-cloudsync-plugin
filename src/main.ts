@@ -47,12 +47,6 @@ export default class CloudSyncPlugin extends Plugin {
     this.syncEngine = new SyncEngine(this);
     this.wsClient = new WebSocketClient(this);
 
-    // Initialize encryption salt if passphrase is set but no salt exists
-    if (this.settings.encryptionPassphrase && !this.settings.encryptionSalt) {
-      this.settings.encryptionSalt = this.crypto.generateSalt();
-      await this.saveSettings();
-    }
-
     // Status bar
     const statusBarEl = this.addStatusBarItem();
     this.statusBar = new StatusBar(this, statusBarEl);
@@ -133,12 +127,6 @@ export default class CloudSyncPlugin extends Plugin {
    * Trigger a sync cycle.
    */
   async syncNow(): Promise<void> {
-    // Ensure salt is generated if passphrase is set
-    if (this.settings.encryptionPassphrase && !this.settings.encryptionSalt) {
-      this.settings.encryptionSalt = this.crypto.generateSalt();
-      await this.saveSettings();
-    }
-
     await this.syncEngine.sync();
   }
 
@@ -217,20 +205,19 @@ export default class CloudSyncPlugin extends Plugin {
     // Generate a new salt for the new passphrase
     const newSalt = this.crypto.generateSalt();
 
-    // Update settings
+    // Update settings and clear the cached key
     this.settings.encryptionPassphrase = newPassphrase;
     this.settings.encryptionSalt = newSalt;
-    await this.saveSettings();
-
-    // Clear the cached key so the new passphrase/salt are used
     this.crypto.clearCache();
-
-    // Trigger a full re-upload by resetting lastSyncTime
-    // This forces the next sync to treat all files as needing upload
+    // Reset lastSyncTime so all files are treated as needing re-upload
     this.settings.lastSyncTime = 0;
     await this.saveSettings();
 
-    // Run sync immediately to re-upload everything
+    // Push the new salt to the server with force=true so all other devices
+    // adopt it on their next sync and can decrypt the re-encrypted files.
+    await this.api.pushEncryptionSalt(newSalt, true);
+
+    // Re-upload all files encrypted with the new passphrase+salt
     await this.syncNow();
   }
 }

@@ -9,6 +9,8 @@ export interface AuthResponse {
   user_id: string;
   device_id: string;
   is_admin: boolean;
+  /** Account-wide encryption salt. Empty string means not yet configured. */
+  encryption_salt?: string;
 }
 
 export interface FileManifestEntry {
@@ -152,6 +154,13 @@ export class CloudSyncAPI {
     this.plugin.settings.refreshToken = data.refresh_token;
     this.plugin.settings.userId = data.user_id;
     this.plugin.settings.deviceId = data.device_id;
+    // Adopt the server's encryption salt so all devices share the same key.
+    if (data.encryption_salt) {
+      if (this.plugin.settings.encryptionSalt !== data.encryption_salt) {
+        this.plugin.settings.encryptionSalt = data.encryption_salt;
+        this.plugin.crypto.clearCache();
+      }
+    }
     await this.plugin.saveSettings();
   }
 
@@ -180,18 +189,20 @@ export class CloudSyncAPI {
     await this.authRequest("POST", `/api/sync/fix-hash`, { file_id: fileId, hash });
   }
 
-  /**
-   * Push this device's encryption salt to the server.
-   * The server only accepts it if the account has no salt yet (first device wins).
-   */
-  async setEncryptionSalt(salt: string): Promise<void> {
-    await this.authRequest("PUT", "/api/auth/encryption-salt", { salt });
-  }
-
   async complete(): Promise<CompleteResponse> {
     return (await this.authRequest("POST", "/api/sync/complete", {
       device_id: this.plugin.settings.deviceId,
     })) as CompleteResponse;
+  }
+
+  /**
+   * Push the encryption salt to the server.
+   * @param salt   Hex-encoded 16-byte salt.
+   * @param force  If true, overwrites any existing salt (use when changing passphrase).
+   *               If false (default), only sets when no salt exists yet (first-device-wins).
+   */
+  async pushEncryptionSalt(salt: string, force = false): Promise<void> {
+    await this.authRequest("PUT", "/api/auth/encryption-salt", { salt, force });
   }
 
   // ── File management endpoints ──
