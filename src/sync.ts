@@ -420,7 +420,15 @@ export class SyncEngine {
     // The server may have a stale hash (e.g. encrypted blob hash) that doesn't
     // match our plaintext hash, causing a false "download" instruction.
     if (existing instanceof TFile) {
-      const localData = await vault.readBinary(existing);
+      let localData: ArrayBuffer;
+      try {
+        localData = await vault.readBinary(existing);
+      } catch {
+        // File is locked (EBUSY on Windows) or unreadable — skip this file for
+        // this sync cycle. It will be retried on the next sync.
+        console.warn(`CloudSync: Could not read "${instruction.path}" for comparison (file may be locked) — skipping`);
+        return false;
+      }
       const localHash = await sha256Hex(localData);
       const downloadedHash = await sha256Hex(data);
 
