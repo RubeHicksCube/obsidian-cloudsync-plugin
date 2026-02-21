@@ -31,7 +31,7 @@ export default class CloudSyncPlugin extends Plugin {
           this.syncEngine.sync(true);
         }
       },
-      30_000,
+      3_000,
       true
     );
   }
@@ -130,6 +130,7 @@ export default class CloudSyncPlugin extends Plugin {
   async onunload(): Promise<void> {
     console.log("CloudSync: Unloading plugin");
     this.stopAutoSync();
+    this.statusBar.destroy();
     this.wsClient.disconnect();
   }
 

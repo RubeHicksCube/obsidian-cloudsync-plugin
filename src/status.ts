@@ -8,11 +8,23 @@ export class StatusBar {
   private state: SyncState = "idle";
   private message: string = "";
   private progress: string = "";
+  private ticker: ReturnType<typeof setInterval> | null = null;
 
   constructor(plugin: CloudSyncPlugin, statusBarEl: HTMLElement) {
     this.plugin = plugin;
     this.statusBarEl = statusBarEl;
+    // Re-render every 30s so "Synced X min ago" stays current
+    this.ticker = setInterval(() => {
+      if (this.state === "idle") this.render();
+    }, 30_000);
     this.render();
+  }
+
+  destroy(): void {
+    if (this.ticker !== null) {
+      clearInterval(this.ticker);
+      this.ticker = null;
+    }
   }
 
   setState(state: SyncState, message?: string): void {
