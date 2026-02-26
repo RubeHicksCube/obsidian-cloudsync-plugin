@@ -639,6 +639,56 @@ export class SyncEngine {
   }
 
   /**
+   * Force re-encrypt and re-upload every local vault file, bypassing the
+   * delta hash-comparison logic. Called after changePassphrase so that all
+   * locally-present files get new encrypted blobs with the new key.
+   *
+   * Files that only exist on the server cannot be re-encrypted here — they
+   * require the originating device to push them after adopting the new key.
+   */
+  async reEncryptLocal(): Promise<void> {
+    if (this.syncing) throw new Error("Sync already in progress");
+    if (!this.plugin.api.isLoggedIn()) throw new Error("Not logged in");
+
+    this.syncing = true;
+    this.plugin.statusBar.setState("syncing", "Re-encrypting files...");
+
+    try {
+      const manifest = await this.buildManifest();
+      let uploaded = 0;
+      let errors = 0;
+      const total = manifest.length;
+
+      for (let i = 0; i < manifest.length; i++) {
+        const entry = manifest[i];
+        this.plugin.statusBar.setProgress(i + 1, total, `Re-encrypting: ${entry.path}`);
+        const instruction: import("./api").SyncInstruction = {
+          path: entry.path,
+          action: "upload",
+          file_id: null,
+          server_hash: null,
+          server_modified_at: null,
+        };
+        try {
+          await this.withRetry(() => this.handleUpload(instruction), entry.path);
+          uploaded++;
+        } catch (e: unknown) {
+          errors++;
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`CloudSync: Re-encrypt failed for ${entry.path}: ${msg}`);
+        }
+      }
+
+      console.log(
+        `CloudSync: Re-encrypted ${uploaded} local file(s)${errors > 0 ? `, ${errors} error(s)` : ""}`
+      );
+    } finally {
+      this.syncing = false;
+      this.plugin.statusBar.setState("idle");
+    }
+  }
+
+  /**
    * Synchronise the local encryption salt with the server's authoritative value.
    *
    * Three cases:

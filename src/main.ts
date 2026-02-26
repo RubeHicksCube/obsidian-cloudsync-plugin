@@ -246,6 +246,15 @@ export default class CloudSyncPlugin extends Plugin {
     // Push the re-encrypted vault key so other devices pick up the new passphrase.
     await this.pushVaultKey();
 
+    // Force re-upload every locally-present file with the new encryption key.
+    // This bypasses the delta hash-comparison which would otherwise skip
+    // unchanged files (same plaintext hash → "no action") and leave their
+    // server-side blobs encrypted with the old key.
+    await this.syncEngine.reEncryptLocal();
+
+    // Normal bidirectional sync to pull any server-side files we don't have locally.
+    // Note: files that only exist on the server and were uploaded by another device
+    // with the old key will still fail to decrypt until that device re-pushes them.
     await this.syncNow();
   }
 
