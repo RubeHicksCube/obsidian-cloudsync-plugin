@@ -416,6 +416,28 @@ export class CloudSyncSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl)
+      .setName("Repair server files")
+      .setDesc(
+        "Re-uploads all local files to the server using the current encryption key. " +
+        "Use this if files on the server cannot be decrypted on other devices (e.g., uploaded " +
+        "via a proxy that corrupted the encrypted data). Only files present on this device are repaired."
+      )
+      .addButton((btn) =>
+        btn
+          .setButtonText("Force re-upload all")
+          .setWarning()
+          .onClick(async () => {
+            try {
+              await this.plugin.syncEngine.reEncryptLocal();
+              new Notice("CloudSync: Re-upload complete. Files should now be decryptable on all devices.");
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e);
+              new Notice(`CloudSync: Re-upload failed — ${msg}`);
+            }
+          })
+      );
+
     // ── Exclude from sync ────────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Exclude from sync" });
 
