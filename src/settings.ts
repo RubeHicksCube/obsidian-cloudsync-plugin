@@ -63,6 +63,9 @@ export interface CloudSyncSettings {
   lastSyncTime: number;
   excludePatterns: string[];
   lastSyncedPaths: string[];
+  // Active vault — set from server vault list after login
+  vaultId: string;
+  vaultName: string;
 }
 
 export const DEFAULT_SETTINGS: CloudSyncSettings = {
@@ -79,6 +82,8 @@ export const DEFAULT_SETTINGS: CloudSyncSettings = {
   lastSyncTime: 0,
   excludePatterns: [],
   lastSyncedPaths: [],
+  vaultId: "default",
+  vaultName: "",
 };
 
 // ── Change Passphrase Modal ────────────────────────────────────────────────────
@@ -152,6 +157,66 @@ class ChangePassphraseModal extends Modal {
   }
 }
 
+// ── Create Vault Modal ────────────────────────────────────────────────────────
+
+class CreateVaultModal extends Modal {
+  private plugin: CloudSyncPlugin;
+  private onConfirm: (name: string) => Promise<void>;
+
+  constructor(app: App, plugin: CloudSyncPlugin, onConfirm: (name: string) => Promise<void>) {
+    super(app);
+    this.plugin = plugin;
+    this.onConfirm = onConfirm;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.createEl("h2", { text: "Create New Vault" });
+    contentEl.createEl("p", {
+      text: "Give your vault a name. Each vault is a separate file namespace — files in one vault are not visible to other vaults.",
+    });
+
+    let vaultName = "";
+    new Setting(contentEl)
+      .setName("Vault name")
+      .addText((text) => {
+        text.setPlaceholder("e.g. Personal, Work, Archive…");
+        text.onChange((value) => { vaultName = value; });
+        // Allow Enter key to confirm
+        text.inputEl.addEventListener("keydown", async (e: KeyboardEvent) => {
+          if (e.key === "Enter" && vaultName.trim()) {
+            this.close();
+            await this.onConfirm(vaultName.trim());
+          }
+        });
+        // Auto-focus
+        setTimeout(() => text.inputEl.focus(), 50);
+      });
+
+    new Setting(contentEl)
+      .addButton((btn) =>
+        btn
+          .setButtonText("Create")
+          .setCta()
+          .onClick(async () => {
+            if (!vaultName.trim()) {
+              new Notice("CloudSync: Vault name cannot be empty");
+              return;
+            }
+            this.close();
+            await this.onConfirm(vaultName.trim());
+          })
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Cancel").onClick(() => this.close())
+      );
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 // ── Settings tab ──────────────────────────────────────────────────────────────
 
 export class CloudSyncSettingTab extends PluginSettingTab {
@@ -162,7 +227,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
-  display(): void {
+  async display(): Promise<void> {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("cloudsync-settings");
@@ -230,8 +295,10 @@ export class CloudSyncSettingTab extends PluginSettingTab {
         btn.setButtonText("Login").onClick(async () => {
           try {
             const authResp = await this.plugin.api.login();
-            // Auto-configure encryption if the server has a stored vault key
+            // Auto-configure encryption from server vault key
             await this.plugin.handleVaultKeyFromAuth(authResp);
+            // Auto-select first vault if none is set
+            await this.plugin.autoSelectVault();
             new Notice("CloudSync: Logged in successfully");
             this.display();
           } catch (e: unknown) {
@@ -244,6 +311,7 @@ export class CloudSyncSettingTab extends PluginSettingTab {
         btn.setButtonText("Register").onClick(async () => {
           try {
             await this.plugin.api.register();
+            await this.plugin.autoSelectVault();
             new Notice("CloudSync: Registered and logged in");
             this.display();
           } catch (e: unknown) {
@@ -279,6 +347,71 @@ export class CloudSyncSettingTab extends PluginSettingTab {
         );
     }
 
+    // ── Vault ────────────────────────────────────────────────────────────────
+    if (isLoggedIn) {
+      containerEl.createEl("h3", { text: "Vault" });
+
+      // Load vaults from server
+      let vaults: import("./api").VaultInfo[] = [];
+      try {
+        vaults = await this.plugin.api.listVaults();
+        // Auto-select first vault if none selected
+        if (vaults.length > 0 && !this.plugin.settings.vaultId) {
+          this.plugin.settings.vaultId = vaults[0].id;
+          this.plugin.settings.vaultName = vaults[0].name;
+          await this.plugin.saveSettings();
+        }
+      } catch {
+        // Server may be unreachable — show cached vault name
+      }
+
+      const vaultSetting = new Setting(containerEl)
+        .setName("Active vault")
+        .setDesc(
+          "Files sync to the selected vault. Each vault is isolated — switching vaults shows different files."
+        );
+
+      if (vaults.length > 0) {
+        vaultSetting.addDropdown((dd) => {
+          for (const v of vaults) {
+            dd.addOption(v.id, v.name);
+          }
+          dd.setValue(this.plugin.settings.vaultId || vaults[0].id);
+          dd.onChange(async (value) => {
+            const vault = vaults.find((v) => v.id === value);
+            this.plugin.settings.vaultId = value;
+            this.plugin.settings.vaultName = vault?.name ?? value;
+            this.plugin.settings.lastSyncTime = 0;
+            this.plugin.settings.lastSyncedPaths = [];
+            await this.plugin.saveSettings();
+            new Notice(`CloudSync: Switched to vault "${vault?.name ?? value}"`);
+          });
+        });
+      } else if (this.plugin.settings.vaultName) {
+        vaultSetting.setDesc(`Active vault: ${this.plugin.settings.vaultName} (offline)`);
+      }
+
+      vaultSetting.addButton((btn) =>
+        btn.setButtonText("+ New vault").onClick(() => {
+          new CreateVaultModal(this.app, this.plugin, async (name) => {
+            try {
+              const v = await this.plugin.api.createVault(name);
+              this.plugin.settings.vaultId = v.id;
+              this.plugin.settings.vaultName = v.name;
+              this.plugin.settings.lastSyncTime = 0;
+              this.plugin.settings.lastSyncedPaths = [];
+              await this.plugin.saveSettings();
+              new Notice(`CloudSync: Created and switched to vault "${v.name}"`);
+              this.display();
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e);
+              new Notice(`CloudSync: Failed to create vault — ${msg}`);
+            }
+          }).open();
+        })
+      );
+    }
+
     // ── Encryption ───────────────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Encryption" });
 
@@ -286,27 +419,19 @@ export class CloudSyncSettingTab extends PluginSettingTab {
     const hasPassphrase = !!this.plugin.settings.encryptionPassphrase;
 
     if (hasSalt && hasPassphrase) {
-      // Fully active — show status and change option only
       new Setting(containerEl)
         .setName("Encryption")
-        .setDesc("Active — files are encrypted with AES-256-GCM before leaving this device. All synced devices use the same key.")
-        .addButton((btn) =>
-          btn
-            .setButtonText("Change Passphrase")
-            .setWarning()
-            .onClick(() => {
-              new ChangePassphraseModal(this.plugin.app, this.plugin).open();
-            })
+        .setDesc(
+          "Active — files are encrypted with AES-256-GCM before leaving this device. " +
+          "The encryption key is synced automatically from your account."
         );
     } else if (hasSalt && !hasPassphrase) {
-      // Account has encryption configured but this device is missing the passphrase.
-      // This is the "windings" state — files will download but be unreadable.
+      // Account has encryption configured but this device hasn't loaded the key yet.
       new Setting(containerEl)
-        .setName("Encryption — passphrase missing")
+        .setName("Encryption — key not loaded")
         .setDesc(
-          "This account has encryption enabled but no passphrase is set on this device. " +
-          "Files will download as garbled data until the passphrase is loaded. " +
-          "Click 'Load from account' to fetch it automatically using your login password."
+          "The server has encryption configured but the key hasn't loaded on this device. " +
+          "Log out and log back in to load it automatically, or click 'Load from account'."
         )
         .addButton((btn) =>
           btn
@@ -322,38 +447,14 @@ export class CloudSyncSettingTab extends PluginSettingTab {
                 new Notice(`CloudSync: Could not load encryption key — ${msg}`);
               }
             })
-        )
-        .addButton((btn) =>
-          btn
-            .setButtonText("Enter manually")
-            .onClick(() => {
-              new ChangePassphraseModal(this.plugin.app, this.plugin).open();
-            })
         );
     } else {
-      // Not yet active — allow setting a passphrase
-      const pendingNote = hasPassphrase
-        ? " Passphrase is set and will activate on the next sync."
-        : "";
       new Setting(containerEl)
-        .setName("Encryption passphrase")
+        .setName("Encryption")
         .setDesc(
-          "Encrypt all files client-side before uploading. Leave empty to sync without encryption. " +
-          "All devices must use the same passphrase." +
-          pendingNote
-        )
-        .addText((text) => {
-          text.inputEl.type = "password";
-          text
-            .setPlaceholder("Enter a passphrase…")
-            .setValue(this.plugin.settings.encryptionPassphrase)
-            .onChange(async (value) => {
-              this.plugin.settings.encryptionPassphrase = value;
-              await this.plugin.saveSettings();
-              // Push encrypted vault key to server so other devices can auto-configure
-              void this.plugin.pushVaultKey();
-            });
-        });
+          "Not configured — files are synced without encryption. " +
+          "To enable encryption, see the Advanced section below."
+        );
     }
 
     // ── Sync ────────────────────────────────────────────────────────────────
@@ -470,6 +571,46 @@ export class CloudSyncSettingTab extends PluginSettingTab {
           }
         });
       });
+
+    // ── Advanced ─────────────────────────────────────────────────────────────
+    const advancedDetails = containerEl.createEl("details");
+    advancedDetails.createEl("summary", { text: "Advanced" });
+    const advancedEl = advancedDetails.createDiv();
+
+    new Setting(advancedEl)
+      .setName("Change encryption passphrase")
+      .setDesc(
+        "Generates a new encryption key and re-uploads all local files. " +
+        "Other devices will need to log out and log back in to receive the new key automatically."
+      )
+      .addButton((btn) =>
+        btn
+          .setButtonText("Change Passphrase")
+          .setWarning()
+          .onClick(() => {
+            new ChangePassphraseModal(this.plugin.app, this.plugin).open();
+          })
+      );
+
+    if (!hasPassphrase && !hasSalt) {
+      new Setting(advancedEl)
+        .setName("Set encryption passphrase")
+        .setDesc(
+          "Enable client-side encryption for this account. Leave empty to sync without encryption. " +
+          "Once set, all devices on this account will encrypt files automatically."
+        )
+        .addText((text) => {
+          text.inputEl.type = "password";
+          text
+            .setPlaceholder("Enter a passphrase…")
+            .setValue(this.plugin.settings.encryptionPassphrase)
+            .onChange(async (value) => {
+              this.plugin.settings.encryptionPassphrase = value;
+              await this.plugin.saveSettings();
+              void this.plugin.pushVaultKey();
+            });
+        });
+    }
   }
 
   private async addPattern(pattern: string, chipsContainer: HTMLElement): Promise<void> {

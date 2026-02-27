@@ -279,6 +279,23 @@ export default class CloudSyncPlugin extends Plugin {
   }
 
   /**
+   * Fetch the vault list and auto-select the first vault if none is configured.
+   * Called after login and register so the vault dropdown is pre-populated.
+   */
+  async autoSelectVault(): Promise<void> {
+    try {
+      const vaults = await this.api.listVaults();
+      if (vaults.length > 0 && !this.settings.vaultId) {
+        this.settings.vaultId = vaults[0].id;
+        this.settings.vaultName = vaults[0].name;
+        await this.saveSettings();
+      }
+    } catch (e) {
+      console.warn("CloudSync: Could not fetch vault list:", e);
+    }
+  }
+
+  /**
    * Decrypt the vault key from a login/refresh response and apply it.
    * Always called on login — if the server has a vault key, this device
    * adopts the account passphrase so encrypted files are readable immediately.

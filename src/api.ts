@@ -79,6 +79,12 @@ export interface DeviceInfo {
   revoked: boolean;
 }
 
+export interface VaultInfo {
+  id: string;
+  name: string;
+  created_at: number;
+}
+
 // ── API Client ──
 
 export class CloudSyncAPI {
@@ -175,6 +181,7 @@ export class CloudSyncAPI {
     return (await this.authRequest("POST", "/api/sync/delta", {
       files,
       deleted_paths: deletedPaths,
+      vault_id: this.plugin.settings.vaultId || "default",
     })) as DeltaResponse;
   }
 
@@ -238,6 +245,16 @@ export class CloudSyncAPI {
       `/api/files/${fileId}/rollback`,
       { version }
     )) as FileInfo;
+  }
+
+  // ── Vault management endpoints ──
+
+  async listVaults(): Promise<VaultInfo[]> {
+    return (await this.authRequest("GET", "/api/vaults")) as VaultInfo[];
+  }
+
+  async createVault(name: string): Promise<VaultInfo> {
+    return (await this.authRequest("POST", "/api/vaults", { name })) as VaultInfo;
   }
 
   // ── Device management endpoints ──
@@ -402,6 +419,7 @@ export class CloudSyncAPI {
     const body: Record<string, string> = {
       path: filePath,
       data: this.arrayBufferToBase64(fileData),
+      vault_id: this.plugin.settings.vaultId || "default",
     };
     if (plaintextHash) body.hash = plaintextHash;
 
